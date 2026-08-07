@@ -122,14 +122,46 @@ policies:
 
 ---
 
-## 5. Scope Boundary & Ingress Scope
+## 5. Token Estimation & Reconciliation Pipeline (TPM Handling)
+
+Tokens-Per-Minute (TPM) quota limits (Input Prompt Tokens + Output Completion Tokens) are enforced through a **3-Layer Estimation & Reconciliation Pipeline** that avoids buffering and preserves streaming TTFT:
+
+```
+1. INGRESS (Pre-Admission < 0.1ms)
+   • Inspects Content-Length or X-Prompt-Tokens header
+   • Reserves: (Estimated Prompt Tokens + 500 Output Buffer) from TPM Bucket
+   • If remaining TPM < Reservation ──► Sheds best-effort requests
+          │
+          ▼
+2. STREAMING EGRESS (Zero-Buffering Pass-Through)
+   • Tokens stream directly to user (TTFT preserved)
+   • Proxy taps the FINAL SSE chunk containing Google's `usageMetadata`:
+     { "promptTokenCount": 1200, "candidatesTokenCount": 450, "totalTokenCount": 1650 }
+   • Reconciles exact delta against the local token bucket
+          │
+          ▼
+3. CONTROL PLANE (Async True-Up every 30s)
+   • Queries Cloud Monitoring: `aiplatform.googleapis.com/quota/generate_content_tokens/usage`
+   • Re-calibrates local TPM buckets against Google's live backend Spanner allocations
+```
+
+1. **Pre-Admission Reservation (< 0.1ms)**:
+   The proxy calculates an upfront token reservation using either client-declared headers (`X-Prompt-Tokens`) or byte heuristics ($\text{Bytes} / 4$) plus an average completion buffer, deducting capacity before admitting the request.
+2. **Final Response Chunk Tapping (Exact Local Accounting)**:
+   As the stream closes, the proxy inspects the `usageMetadata` object in the final Server-Sent Event (SSE) chunk, adjusting the token bucket with the exact token count.
+3. **Control Plane Asynchronous True-Up (Ground Truth)**:
+   The Control Plane continuously ingests rolling 1-minute usage metrics from Cloud Monitoring (`aiplatform.googleapis.com/quota/generate_content_tokens/usage`) every 30 seconds, correcting drift across distributed proxy replicas.
+
+---
+
+## 6. Scope Boundary & Ingress Scope
 
 * **In-Scope for MVP**: Workloads where outbound Vertex AI calls are routed through the VPC Private DNS zone (GKE pods, Compute VMs, serverless workloads with VPC egress, and VPN-connected developer workstations), or fronted by GCP Agent Gateway.
 * **Out-of-Scope**: Un-routed calls originating outside the VPC Private DNS boundary (e.g. disconnected home Wi-Fi workstations without VPN).
 
 ---
 
-## 6. Phased Implementation Plan
+## 7. Phased Implementation Plan
 
 ### Phase 1: Local Standalone Prototype & Fallback Engine (Days 1–3)
 * Implement Go 1.25+ `ext_proc` Data Plane service with local token bucket and cascade evaluation.
@@ -157,7 +189,7 @@ policies:
 
 ---
 
-## 7. Success Criteria & Quantitative Metrics
+## 8. Success Criteria & Quantitative Metrics
 
 | Metric | Target Goal | Verification Method |
 | :--- | :--- | :--- |
@@ -169,7 +201,7 @@ policies:
 
 ---
 
-## 8. References & External Documentation
+## 9. References & External Documentation
 
 * [Envoy External Processing Filter Specification](https://www.envoyproxy.io/docs/envoy/latest/configuration/http/http_filters/ext_proc_filter)
 * [Google Cloud Service Extensions Overview](https://cloud.google.com/service-extensions/docs/overview)

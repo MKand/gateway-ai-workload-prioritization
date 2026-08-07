@@ -178,7 +178,32 @@ policies:
 
 ---
 
-## 5. Pluggable Ingress Topologies
+## 5. Token Estimation & Reconciliation Pipeline (TPM Handling)
+
+To enforce Tokens-Per-Minute (TPM) ceilings without payload buffering:
+
+```
+1. INGRESS (Pre-Admission < 0.1ms)
+   • Inspects Content-Length or X-Prompt-Tokens header
+   • Reserves: (Estimated Prompt Tokens + 500 Output Buffer) from TPM Bucket
+   • If remaining TPM < Reservation ──► Sheds best-effort requests
+          │
+          ▼
+2. STREAMING EGRESS (Zero-Buffering Pass-Through)
+   • Tokens stream directly to user (TTFT preserved)
+   • Proxy taps the FINAL SSE chunk containing Google's `usageMetadata`:
+     { "promptTokenCount": 1200, "candidatesTokenCount": 450, "totalTokenCount": 1650 }
+   • Reconciles exact delta against the local token bucket
+          │
+          ▼
+3. CONTROL PLANE (Async True-Up every 30s)
+   • Queries Cloud Monitoring: `aiplatform.googleapis.com/quota/generate_content_tokens/usage`
+   • Re-calibrates local TPM buckets against Google's live backend Spanner allocations
+```
+
+---
+
+## 6. Pluggable Ingress Topologies
 
 ### Topology A: Self-Hosted Envoy + VPC Private DNS (Zero Code Changes)
 * **Ingress**: [GCP Cloud DNS Private Zone](https://cloud.google.com/dns/docs/zones/zones-overview#private_zones) overrides `*.aiplatform.googleapis.com` to the Internal Load Balancer VIP.
@@ -192,7 +217,7 @@ policies:
 
 ---
 
-## 6. References & External Documentation
+## 7. References & External Documentation
 
 * [Envoy External Processing Filter Specification](https://www.envoyproxy.io/docs/envoy/latest/configuration/http/http_filters/ext_proc_filter)
 * [Google Cloud Service Extensions Overview](https://cloud.google.com/service-extensions/docs/overview)
