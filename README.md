@@ -27,35 +27,15 @@ All data-plane decisions execute in **< 1ms** with zero payload buffering, prese
 
 ---
 
-## Repository Structure
+## Documentation Structure
 
 ```
 repo/
-├── cmd/
-│   └── governor/                   # Main entry point for Go ext_proc service
-│       └── main.go
-├── config/
-│   └── governor.yaml               # Fallback cascades and policy definitions
-├── pkg/
-│   ├── governor/
-│   │   ├── bucket.go               # In-memory Token Bucket algorithm
-│   │   ├── cascade.go              # Configurable Fallback Cascade Engine
-│   │   ├── priority.go             # 3-tier priority evaluation logic
-│   │   └── reconciler.go           # Cloud Quotas API background reconciler
-│   └── server/
-│       └── ext_proc.go             # Envoy gRPC external processor handler
-├── deploy/
-│   ├── docker-compose.yaml         # Local standalone testing environment
-│   ├── envoy/
-│   │   └── envoy.yaml              # Envoy proxy configuration with ext_proc
-│   └── terraform/                  # GCP infrastructure definitions
-│       ├── dns.tf                  # Cloud DNS Private Zone
-│       ├── ilb.tf                  # Internal Application Load Balancer
-│       └── gke.tf                  # GKE / Cloud Run service deployment
-├── scripts/
-│   ├── benchmark_load.go           # Synthetic burst load test generator
-│   └── setup_local_ca.sh           # Local self-signed CA generation script
-├── docs/                           # Architectural guides, gap analyses, and proposals
+├── docs/
+│   ├── project_overview.md                 # Vision, problem statement, and DSQ 3.0 gap analysis
+│   ├── architecture.md                     # System architecture: Control Plane vs. Data Plane
+│   ├── proxy_challenges_and_solutions.md   # VPC Private DNS, TLS trust, and reachability
+│   └── mvp_proposal_vpc_dns_interception.md # MVP implementation roadmap and milestones
 └── README.md
 ```
 
