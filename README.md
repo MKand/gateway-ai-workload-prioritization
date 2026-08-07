@@ -4,38 +4,22 @@ A priority-aware rate limiting and dynamic traffic router for Google Cloud Platf
 
 ---
 
-## Documentation Roadmap
+## Documentation
 
 | Document | Description |
 | :--- | :--- |
 | [docs/project_overview.md](docs/project_overview.md) | **Vision & Gap Analysis**: Deep dive into quota contention, comparison with traditional gateways, and Vertex AI Dynamic Shared Quotas (DSQ 3.0). |
-| [docs/architecture.md](docs/architecture.md) | **System Architecture**: Detailed Control Plane vs. Data Plane design, lock-free state synchronization, and pluggable ingress topologies. |
-| [docs/proxy_challenges_and_solutions.md](docs/proxy_challenges_and_solutions.md) | **Proxy Networking**: Challenges and solutions for VPC Private DNS interception, TLS termination, loop prevention, and local developer workloads (`agy`). |
-| [docs/mvp_proposal_vpc_dns_interception.md](docs/mvp_proposal_vpc_dns_interception.md) | **MVP Implementation Proposal**: Phased 12-day milestone plan, success criteria, and quantitative benchmarks. |
+| [docs/architecture.md](docs/architecture.md) | **System Architecture**: Detailed Control Plane vs. Data Plane design, priority taxonomy, lock-free state synchronization, and pluggable ingress topologies. |
 
 ---
 
-## Priority Taxonomy
-
-The Quota Governor evaluates the incoming `X-Request-Priority` header:
-
-- **`critical`**: Protected interactive user chat and real-time agents (100% quota protection; automatically traverses model fallback cascades).
-- **`best-effort`**: Sheddable offline indexing, synthetic evals, and batch jobs (throttled immediately with HTTP 429 when quota crosses 70%).
-- **`custom`**: Policy-driven workloads executing custom fallback DAGs (`quality_first`, `cost_optimized`, `strict_exact`).
-
-All data-plane decisions execute in **< 1ms** with zero payload buffering, preserving Time-To-First-Token (TTFT).
-
----
-
-## Documentation Structure
+## Repository Structure
 
 ```
 repo/
 ├── docs/
 │   ├── project_overview.md                 # Vision, problem statement, and DSQ 3.0 gap analysis
-│   ├── architecture.md                     # System architecture: Control Plane vs. Data Plane
-│   ├── proxy_challenges_and_solutions.md   # VPC Private DNS, TLS trust, and reachability
-│   └── mvp_proposal_vpc_dns_interception.md # MVP implementation roadmap and milestones
+│   └── architecture.md                     # System architecture: Control Plane vs. Data Plane
 └── README.md
 ```
 
@@ -52,7 +36,7 @@ repo/
 - **GCP Project**: Vertex AI API (`aiplatform.googleapis.com`) and Cloud Quotas API (`cloudquotas.googleapis.com`) enabled.
 - **Compute & Ingress**:
   - *Option A (Self-Hosted)*: GKE or Cloud Run running Envoy + Governor behind an Internal Application Load Balancer with Cloud DNS Private Zone.
-  - *Option B (Managed)*: Google Cloud Application Load Balancer or GCP Agent Gateway with Cloud Service Extensions (`networkservices.googleapis.com`).
+  - *Option B (Managed)*: Google Cloud Application Load Balancer or GCP Agent Gateway with Cloud Service Extensions (`networkservices.googleapis.com`). The proxy will likely be hosted as a [Envoy Proxy](https://www.envoyproxy.io/) running on Cloud Run or GKE.
 - **IAM Roles**:
   - `roles/cloudquotas.viewer` or `roles/monitoring.viewer` on the target Project or Organization.
   - `roles/aiplatform.user` for model invocation and fallback routing.

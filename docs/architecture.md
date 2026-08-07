@@ -1,6 +1,6 @@
 # Gemini Quota Governor: System Architecture
 
-## 1. Executive Summary
+## 1. Summary
 
 The **Gemini Quota Governor** is a high-performance, priority-aware traffic management and dynamic routing system for Google Cloud Platform (GCP) Vertex AI workloads.
 
@@ -135,45 +135,28 @@ The Data Plane executes the synchronous request path in **< 1ms**, evaluating ad
 | Priority Tier | Target Workloads | Quota & Degradation Behavior |
 | :--- | :--- | :--- |
 | **`critical`** | Interactive user chat, real-time agent execution, checkout workflows. | **100% Protected**: Traverses default fallback cascades (e.g. 3.5 Pro $\to$ 3.5 Flash $\to$ 3.0 Flash $\to$ Regional Failover) before ever dropping. |
-| **`best-effort`** | Offline document indexing, synthetic test generation, benchmark sweeps, batch evals. | **Early Shedding**: Throttled immediately with `HTTP 429 (Retry-After: 5s)` when quota crosses 70%. Never allowed to cascade down and consume lighter model headroom. |
+| **`best_effort`** | Offline document indexing, synthetic test generation, benchmark sweeps, batch evals. | **Early Shedding**: Throttled immediately with `HTTP 429 (Retry-After: 5s)` when quota crosses 70%. Never allowed to cascade down and consume lighter model headroom. |
 | **`custom`** | Workloads with specific quality, cost, or regulatory routing requirements. | **Custom Cascade DAG**: Follows an explicit fallback policy specified in headers (e.g., `X-Fallback-Policy: quality_first` or `X-Fallback-Policy: cost_optimized`). |
 
 ### 3. Configurable Fallback Cascade Engine
 
 ```yaml
 # config/governor.yaml
-policies:
-  # Default policy for 'critical' traffic
-  default_cascade:
-    - model: "gemini-3.5-pro"
-      trigger_threshold: 0.95        # Trigger fallback when 3.5-pro quota > 95%
-      cascade:
-        - target_model: "gemini-3.5-flash"
-        - target_model: "gemini-3.0-flash"
-        - target_region: "us-east4"  # Regional failover
-
-    - model: "gemini-3.5-flash"
-      trigger_threshold: 0.95
-      cascade:
-        - target_model: "gemini-3.0-flash"
-
-  # Custom Policies for 'custom' priority tier
-  custom_policies:
-    quality_first:                   # Preserve model quality via regional failover
-      - model: "gemini-3.5-pro"
+default_policy: "best_effort"  # Default policy for all requests that don't specify a specific X-Request-Priority header
+custom_policies:
+    custom1:                   # Failover to lower tier models when the requested model is full, but remain in the same region
         cascade:
-          - target_region: "us-east4"
-          - target_region: "europe-west4"
-
-    cost_optimized:                  # Aggressively downgrade model to save TPM
-      - model: "gemini-3.5-pro"
-        cascade:
+          - target_model: "gemini-3.5-pro"
           - target_model: "gemini-3.5-flash"
+          - target_model: "gemini-3.0-pro"
           - target_model: "gemini-3.0-flash"
+    custom2:                   # Failover to different regions when the requested region is full, but don't change the model
+        cascade:
+          - region: "us-east4"
+          - region: "europe-west4"
+          - region: "asia-northeast1"
+          - region: "asia-southeast1"
 
-    strict_exact:                    # Strict model requirements (no downgrade allowed)
-      - model: "gemini-3.5-pro"
-        cascade: []                  # Returns 429 if 3.5-pro is full
 ```
 
 ---
@@ -183,9 +166,9 @@ policies:
 To enforce Tokens-Per-Minute (TPM) ceilings without payload buffering:
 
 ```
-1. INGRESS (Pre-Admission < 0.1ms)
+1. INGRESS (Pre-Admission)
    • Inspects Content-Length or X-Prompt-Tokens header
-   • Reserves: (Estimated Prompt Tokens + 500 Output Buffer) from TPM Bucket
+   • Reserves: (Estimated Prompt Tokens + Buffer Output Tokens) from TPM Bucket
    • If remaining TPM < Reservation ──► Sheds best-effort requests
           │
           ▼
@@ -205,15 +188,16 @@ To enforce Tokens-Per-Minute (TPM) ceilings without payload buffering:
 
 ## 6. Pluggable Ingress Topologies
 
-### Topology A: Self-Hosted Envoy + VPC Private DNS (Zero Code Changes)
-* **Ingress**: [GCP Cloud DNS Private Zone](https://cloud.google.com/dns/docs/zones/zones-overview#private_zones) overrides `*.aiplatform.googleapis.com` to the Internal Load Balancer VIP.
-* **TLS**: Envoy terminates TLS with an internal CA certificate trusted by client base containers.
-* **Upstream Loop Prevention**: Envoy resolves upstream endpoints via public DNS (`8.8.8.8`) or routes directly to Google Private Access VIPs (`199.36.153.8:443`), bypassing the VPC private zone.
+* **Invocation**: GCP makes an internal `ext_proc` gRPC callout to the Go Governor service running on Cloud Run or GKE. 
 
-### Topology B: Google-Managed Ingress (GCP Agent Gateway / Cloud Service Extensions)
-* **Ingress**: Uses [Google Cloud Service Extensions](https://cloud.google.com/service-extensions/docs/overview) attached directly to an Application Load Balancer or Agent Gateway.
-* **Invocation**: GCP makes an internal `ext_proc` gRPC callout to the Go Governor service running on Cloud Run or GKE.
-* **Shared Contract**: Reuses the exact same Go Data Plane server with zero code differences.
+### Topology A: Self-Hosted Envoy + VPC Private DNS
+* **Ingress**: [GCP Cloud DNS Private Zone](https://cloud.google.com/dns/docs/zones/zones-overview#private_zones) overrides `*.aiplatform.googleapis.com` to the Internal Load Balancer VIP. The proxy will be hosted as a [Envoy Proxy](https://www.envoyproxy.io/) running on Cloud Run or GKE.
+
+### Topology B: Google-Managed Ingress (Cloud Service Extension Callout)
+* **Ingress**: Uses [Google Cloud Service Extensions](https://cloud.google.com/service-extensions/docs/overview) attached directly to an Application Load Balancer as a `Service Extension Callout`.
+
+### Topology C: Google-Managed Ingress (GCP Agent Gateway / Cloud Service Extensions)
+* **Ingress**: Uses [Google Cloud Service Extensions](https://cloud.google.com/service-extensions/docs/overview) attached directly to an Application Load Balancer or Agent Gateway as a `Service Extension WASM plugin`
 
 ---
 
