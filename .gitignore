@@ -1,0 +1,48 @@
+# Binaries and build artifacts
+bin/
+dist/
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# Test artifacts and coverage
+*.test
+*.out
+coverage.html
+profile.pprof
+trace.out
+
+# Go cache and vendor (if not committed)
+vendor/
+
+# Environment, secrets, and credentials
+.env
+.env.*
+*.key
+*.pem
+*.crt
+*.pfx
+credentials.json
+*service-account*.json
+application_default_credentials.json
+
+# Local runtime logs and temporary directories
+tmp/
+*.log
+
+# Terraform local state (for deploy/terraform)
+.terraform/
+*.tfstate
+*.tfstate.*
+.terraform.lock.hcl
+
+# IDE and OS metadata
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
