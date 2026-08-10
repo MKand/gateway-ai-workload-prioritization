@@ -33,7 +33,7 @@ type MockQuotaClient struct {
 	Quotas        map[string]*RawModelQuota
 	projectLimits map[string]governor.ModelLimit
 	orgLimits     map[string]governor.ModelLimit
-	Err           error
+	Err           error // Used for simulating errors
 }
 
 func NewMockQuotaClient(projectLimits, orgLimits map[string]governor.ModelLimit) *MockQuotaClient {
@@ -43,23 +43,42 @@ func NewMockQuotaClient(projectLimits, orgLimits map[string]governor.ModelLimit)
 	}
 }
 
-// resolveLimit finds the correct limit using family substring matching
-func (mqc *MockQuotaClient) resolveLimit(limits map[string]governor.ModelLimit, modelName string) governor.ModelLimit {
-	modelLower := strings.ToLower(modelName)
-	// 1. Check Flash-Lite first (it contains "flash", so check it before "flash")
+// resolveLimit finds the correct limit using hierarchical matching
+func (mqc *MockQuotaClient) resolveLimit(limits map[string]governor.ModelLimit, project, region, model string) governor.ModelLimit {
+	modelLower := strings.ToLower(model)
+	regionLower := strings.ToLower(region)
+	projectLower := strings.ToLower(project)
+
+	// 1. Try exact "project/region/model" match
+	if project != "" {
+		key := fmt.Sprintf("%s/%s/%s", projectLower, regionLower, modelLower)
+		if limit, exists := limits[key]; exists {
+			return limit
+		}
+	}
+
+	// 2. Try "region/model" match (useful for Org-level limits)
+	keyRM := fmt.Sprintf("%s/%s", regionLower, modelLower)
+	if limit, exists := limits[keyRM]; exists {
+		return limit
+	}
+
+	// 3. Try exact "model" match
+	if limit, exists := limits[modelLower]; exists {
+		return limit
+	}
+
+	// 4. Fallback to model family substring matching
 	if strings.Contains(modelLower, "flash-lite") {
 		if limit, exists := limits["flash-lite"]; exists {
 			return limit
 		}
 	}
-
-	// 2. Check standard Flash
 	if strings.Contains(modelLower, "flash") {
 		if limit, exists := limits["flash"]; exists {
 			return limit
 		}
 	}
-	// 3. Check Pro
 	if strings.Contains(modelLower, "pro") {
 		if limit, exists := limits["pro"]; exists {
 			return limit
@@ -78,7 +97,7 @@ func (mqc *MockQuotaClient) FetchQuotas(ctx context.Context, projectIDs []string
 	for _, r := range regions {
 		for _, m := range models {
 			// 1. Add Org-level quota (with org limits, 0 usage)
-			orgLimit := mqc.resolveLimit(mqc.orgLimits, m)
+			orgLimit := mqc.resolveLimit(mqc.orgLimits, "", r, m)
 			oKey := fmt.Sprintf("%s/%s", strings.ToLower(r), strings.ToLower(m))
 			resp[oKey] = &RawModelQuota{
 				Region:     r,
@@ -91,7 +110,7 @@ func (mqc *MockQuotaClient) FetchQuotas(ctx context.Context, projectIDs []string
 
 			// 2. Add Project-level quotas (with project limits, simulated usage)
 			for _, p := range projectIDs {
-				projLimit := mqc.resolveLimit(mqc.projectLimits, m)
+				projLimit := mqc.resolveLimit(mqc.projectLimits, p, r, m)
 				prmq := &RawModelQuota{
 					ProjectID:  p,
 					Region:     r,
