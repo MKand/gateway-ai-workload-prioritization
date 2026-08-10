@@ -15,11 +15,19 @@ func TestInMemoryStore_SaveAndGet(t *testing.T) {
 
 	// 1. Construct a dummy governor.QuotaSnapshot
 	snapshot := &governor.QuotaSnapshot{
-		Quotas: map[string]*governor.ModelQuota{
+		OrgQuotas: map[string]*governor.ModelQuota{
 			"us-central1/gemini-2.5-pro": {
 				Model:  "gemini-2.5-pro",
 				Region: "us-central1",
 				MaxRPM: 100,
+			},
+		},
+		ProjectQuotas: map[string]*governor.ModelQuota{
+			"project-a/us-central1/gemini-2.5-pro": {
+				ProjectID: "project-a",
+				Model:     "gemini-2.5-pro",
+				Region:    "us-central1",
+				MaxRPM:    100,
 			},
 		},
 		LastSyncedAt: time.Now(),
@@ -78,9 +86,15 @@ func TestInMemoryStore_Concurrency(t *testing.T) {
 		go func(val int64) {
 			defer wg.Done()
 			snap := &governor.QuotaSnapshot{
-				Quotas: map[string]*governor.ModelQuota{
+				OrgQuotas: map[string]*governor.ModelQuota{
 					"us-central1/gemini-3.5-pro": {
 						MaxRPM: val,
+					},
+				},
+				ProjectQuotas: map[string]*governor.ModelQuota{
+					"project-a/us-central1/gemini-3.5-pro": {
+						ProjectID: "project-a",
+						MaxRPM:    val,
 					},
 				},
 			}
@@ -96,4 +110,5 @@ func TestInMemoryStore_Concurrency(t *testing.T) {
 		}()
 	}
 
+	wg.Wait()
 }
