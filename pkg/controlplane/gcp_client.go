@@ -20,10 +20,11 @@ import (
 )
 
 const (
-	rpmQuotaID    = "GenerateContentRequestsPerMinutePerProjectPerRegionPerBaseModel"
-	tpmQuotaID    = "GenerateContentInputTokensPerMinutePerRegionPerBaseModel"
-	rpmMetricType = "aiplatform.googleapis.com/quota/generate_content_requests_per_minute_per_project_per_base_model/usage"
-	tpmMetricType = "aiplatform.googleapis.com/quota/generate_content_input_tokens_per_minute_per_base_model/usage"
+	rpmQuotaID                    = "GenerateContentRequestsPerMinutePerProjectPerRegionPerBaseModel"
+	tpmQuotaID                    = "GenerateContentInputTokensPerMinutePerRegionPerBaseModel"
+	rpmMetricType                 = "aiplatform.googleapis.com/quota/generate_content_requests_per_minute_per_project_per_base_model/usage"
+	tpmMetricType                 = "aiplatform.googleapis.com/quota/generate_content_input_tokens_per_minute_per_base_model/usage"
+	MetricLookupWindowMinutes int = 5
 )
 
 type GCPQuotaClient struct {
@@ -68,9 +69,9 @@ func NewGCPQuotaClient(ctx context.Context, orgID string, projectLimits, orgLimi
 
 func (gqc *GCPQuotaClient) fetchUsage(ctx context.Context, projectID, metricType string) (map[string]int64, error) {
 	usage := make(map[string]int64)
-	// 1. Define the time interval (querying the last 5 minutes to account for ingestion delay)
+	// 1. Define the time interval (querying the last few minutes to account for ingestion delay)
 	now := time.Now()
-	startTime := now.Add(-5 * time.Minute)
+	startTime := now.Add(time.Duration(-MetricLookupWindowMinutes) * time.Minute)
 
 	req := &monitoringpb.ListTimeSeriesRequest{
 		Name:   fmt.Sprintf("projects/%s", projectID),
