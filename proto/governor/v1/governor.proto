@@ -1,0 +1,76 @@
+syntax = "proto3";
+
+package governor.v1;
+
+import "google/protobuf/timestamp.proto";
+import "google/protobuf/duration.proto";
+
+option go_package = "github.com/MKand/gateway-ai-workload-prioritization/gen/go/governor/v1;governorv1";
+
+// Priority represents the classification of incoming LLM traffic.
+enum Priority {
+  PRIORITY_UNSPECIFIED = 0;
+  PRIORITY_CRITICAL = 1;     // User-facing interactive chat, production workflows (protected)
+  PRIORITY_BEST_EFFORT = 2;  // Offline indexing, synthetic testing (shed early at >70%)
+  PRIORITY_CUSTOM = 3;       // Follows custom cascade DAG
+}
+
+// ModelLimit defines static or default configured limits for RPM and TPM.
+message ModelLimit {
+  int64 max_rpm = 1;
+  int64 max_tpm = 2;
+}
+
+// ModelQuota holds the real-time capacity and utilization state for a model in a region.
+message ModelQuota {
+  string project_id = 1;      // Empty for Org-level pooled quotas
+  string model = 2;           // e.g. "gemini-1.5-pro"
+  string region = 3;          // e.g. "us-central1"
+  int64 max_tpm = 4;
+  int64 max_rpm = 5;
+  int64 current_rpm = 6;
+  int64 current_tpm = 7;
+  int64 headroom_rpm = 8;
+  int64 headroom_tpm = 9;
+  double utilization_rpm = 10;
+  double utilization_tpm = 11;
+}
+
+// QuotaSnapshot represents the complete cluster-wide quota state at an instant in time.
+message QuotaSnapshot {
+  // OrgQuotas: key is "region/model" (e.g. "us-central1/gemini-1.5-pro")
+  map<string, ModelQuota> org_quotas = 1;
+
+  // ProjectQuotas: key is "project/region/model"
+  map<string, ModelQuota> project_quotas = 2;
+
+  google.protobuf.Timestamp last_synced_at = 3;
+}
+
+// Decision represents the outcome of a Data Plane routing / admission evaluation.
+message Decision {
+  bool drop = 1;                         // True if request must be shed with HTTP 429
+  string replace_model = 2;             // If set, rewrite target model in URL path
+  string replace_region = 3;            // If set, rewrite target region in URL/host
+  string reason = 4;                    // Diagnostic reason for metrics/logs
+  google.protobuf.Duration retry_after = 5; // Header value for HTTP 429
+}
+
+// ============================================================================
+// Control Plane <-> Data Plane Synchronization Service
+// ============================================================================
+
+message StreamQuotasRequest {
+  string client_id = 1;
+}
+
+message GetQuotaSnapshotRequest {}
+
+// QuotaDiscoveryService allows Data Plane nodes to discover and stream quota updates.
+service QuotaDiscoveryService {
+  // Server-streaming RPC: Control Plane pushes new QuotaSnapshots to Data Plane in real-time
+  rpc StreamQuotas(StreamQuotasRequest) returns (stream QuotaSnapshot);
+
+  // Unary RPC: One-shot fetch of the latest snapshot on startup
+  rpc GetQuotaSnapshot(GetQuotaSnapshotRequest) returns (QuotaSnapshot);
+}
