@@ -4,33 +4,33 @@ import (
 	"context"
 	"sync"
 	"testing"
-	"time"
 
-	"github.com/MKand/gateway-ai-workload-prioritization/pkg/governor"
+	pb "github.com/MKand/gateway-ai-workload-prioritization/gen/go/governor/v1"
+	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 func TestInMemoryStore_SaveAndGet(t *testing.T) {
 	store := NewInMemoryStore()
 	ctx := context.Background()
 
-	// 1. Construct a dummy governor.QuotaSnapshot
-	snapshot := &governor.QuotaSnapshot{
-		OrgQuotas: map[string]*governor.ModelQuota{
+	// 1. Construct a dummy pb.QuotaSnapshot
+	snapshot := &pb.QuotaSnapshot{
+		OrgQuotas: map[string]*pb.ModelQuota{
 			"us-central1/gemini-2.5-pro": {
 				Model:  "gemini-2.5-pro",
 				Region: "us-central1",
-				MaxRPM: 100,
+				MaxRpm: 100,
 			},
 		},
-		ProjectQuotas: map[string]*governor.ModelQuota{
+		ProjectQuotas: map[string]*pb.ModelQuota{
 			"project-a/us-central1/gemini-2.5-pro": {
-				ProjectID: "project-a",
+				ProjectId: "project-a",
 				Model:     "gemini-2.5-pro",
 				Region:    "us-central1",
-				MaxRPM:    100,
+				MaxRpm:    100,
 			},
 		},
-		LastSyncedAt: time.Now(),
+		LastSyncedAt: timestamppb.Now(),
 	}
 
 	err := store.Save(ctx, snapshot)
@@ -85,16 +85,16 @@ func TestInMemoryStore_Concurrency(t *testing.T) {
 	for i := 1; i <= workers; i++ {
 		go func(val int64) {
 			defer wg.Done()
-			snap := &governor.QuotaSnapshot{
-				OrgQuotas: map[string]*governor.ModelQuota{
+			snap := &pb.QuotaSnapshot{
+				OrgQuotas: map[string]*pb.ModelQuota{
 					"us-central1/gemini-3.5-pro": {
-						MaxRPM: val,
+						MaxRpm: val,
 					},
 				},
-				ProjectQuotas: map[string]*governor.ModelQuota{
+				ProjectQuotas: map[string]*pb.ModelQuota{
 					"project-a/us-central1/gemini-3.5-pro": {
-						ProjectID: "project-a",
-						MaxRPM:    val,
+						ProjectId: "project-a",
+						MaxRpm:    val,
 					},
 				},
 			}
