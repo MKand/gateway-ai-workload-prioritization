@@ -5,7 +5,7 @@ UNAME_S := $(shell uname -s)
 GOPATH := $(shell go env GOPATH 2>/dev/null || echo $(HOME)/go)
 export PATH := $(PATH):$(GOPATH)/bin:$(HOME)/go/bin
 
-.PHONY: default check-env check-os check-tools proto help
+.PHONY: default check-env check-os check-tools proto test test-race test-concurrency help
 
 # Default target when running just 'make' without arguments
 default:
@@ -94,11 +94,32 @@ proto: check-env
 	@echo "==> Protobuf Go code generated successfully in gen/go/governor/v1/"
 
 ## ----------------------------------------------------------------------
+## TEST
+## ----------------------------------------------------------------------
+test: check-env
+	@echo "==> Running standard unit tests..."
+	go test -v ./...
+
+test-race: check-env
+	@echo "==> Running unit tests with race detector..."
+	go test -race -v ./...
+
+test-concurrency: check-env
+	@echo "==> Running concurrency tests with race detection (10 iterations)..."
+	go test -race -run="Test.*Concurrency" -count=10 -v ./...
+
+## ----------------------------------------------------------------------
 ## HELP
 ## ----------------------------------------------------------------------
 
 help:
 	@echo "Available targets:"
-	@echo "  make proto      - Run environment checks and generate Go code from proto definitions"
-	@echo "  make check-env  - Run all environment and prerequisite checks (OS, go, protoc, plugins)"
-	@echo "  make help       - Display this help message"
+	@echo "  make proto             - Run environment checks and generate Go code from proto definitions"
+	@echo "  make check-env         - Run all environment and prerequisite checks (OS, go, protoc, plugins)"
+	@echo "  make test              - Run standard unit tests"
+	@echo "  make test-race         - Run unit tests with Go race detector"
+	@echo "  make test-concurrency  - Run concurrency tests (10 iterations) with Go race detector"
+	@echo "  make help              - Display this help message"
+	@echo "  make test              - Run standard unit tests"
+	@echo "  make test-race         - Run unit tests with Go race detector"
+	@echo "  make test-concurrency  - Run concurrency tests (10 iterations) with Go race detector"

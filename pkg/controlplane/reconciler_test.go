@@ -305,3 +305,60 @@ func TestReconciler_ErrorResilience(t *testing.T) {
 		t.Error("Expected store to be empty during outage, but found a snapshot")
 	}
 }
+
+func TestNewReconciler_Validation(t *testing.T) {
+	ctx := context.Background()
+	cfg := &governor.Config{}
+	client := NewMockGCPClient(ctx, nil, nil)
+	store := NewInMemoryStore()
+
+	if _, err := NewReconciler(nil, client, store); err == nil {
+		t.Error("Expected error for nil config, got nil")
+	}
+	if _, err := NewReconciler(cfg, nil, store); err == nil {
+		t.Error("Expected error for nil client, got nil")
+	}
+	if _, err := NewReconciler(cfg, client, nil); err == nil {
+		t.Error("Expected error for nil store, got nil")
+	}
+}
+
+type mockBadMetricsClient struct {
+	ReturnValues map[string]*RawModelQuota
+}
+
+func (m *mockBadMetricsClient) FetchMetrics(ctx context.Context, projectIDs []string, regions []string, models []string) (map[string]*RawModelQuota, error) {
+	return m.ReturnValues, nil
+}
+
+func TestReconcile_KeyFailure(t *testing.T) {
+	ctx := context.Background()
+	store := NewInMemoryStore()
+	cfg := &governor.Config{
+		ProjectIDs: []string{"projecta"},
+		Regions:    []string{"us-central1"},
+		Models:     []string{"model1"},
+	}
+
+	// This client returns a RawModelQuota with a ProjectId but empty Region.
+	// This will cause raw.GetKey() to fail inside reconciler.reconcile()
+	badClient := &mockBadMetricsClient{
+		ReturnValues: map[string]*RawModelQuota{
+			"bad-key": {
+				ProjectId: "projecta",
+				Region:    "", // Empty region triggers GetKey error
+				Model:     "model1",
+			},
+		},
+	}
+
+	reconciler, err := NewReconciler(cfg, badClient, store)
+	if err != nil {
+		t.Fatalf("failed to create reconciler: %v", err)
+	}
+
+	err = reconciler.reconcile(ctx)
+	if err == nil {
+		t.Error("Expected reconcile to fail due to bad metric key, but it succeeded")
+	}
+}

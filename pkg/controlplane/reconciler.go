@@ -14,11 +14,11 @@ import (
 
 type Reconciler struct {
 	config        *governor.Config
-	quotaClient   QuotaClient
+	quotaClient   MetricsClient
 	snapshotStore SnapshotStore
 }
 
-func NewReconciler(config *governor.Config, client QuotaClient, store SnapshotStore) (*Reconciler, error) {
+func NewReconciler(config *governor.Config, client MetricsClient, store SnapshotStore) (*Reconciler, error) {
 	if config == nil {
 		return nil, errors.New("config cannot be nil")
 	}
@@ -54,7 +54,7 @@ func (r *Reconciler) Start(ctx context.Context) error {
 }
 
 func (r *Reconciler) reconcile(ctx context.Context) error {
-	rawQuotas, err := r.quotaClient.FetchQuotas(ctx, r.config.ProjectIDs, r.config.Regions, r.config.Models)
+	rawQuotas, err := r.quotaClient.FetchMetrics(ctx, r.config.ProjectIDs, r.config.Regions, r.config.Models)
 	if err != nil {
 		return err
 	}

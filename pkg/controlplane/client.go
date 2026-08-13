@@ -32,9 +32,9 @@ const (
 // Interfaces
 // ============================================================================
 
-// QuotaClient is the top-level interface for fetching quota and usage data.
-type QuotaClient interface {
-	FetchQuotas(ctx context.Context, projectIDs []string, regions []string, models []string) (map[string]*RawModelQuota, error)
+// MetricsClient is the top-level interface for fetching quota and usage data.
+type MetricsClient interface {
+	FetchMetrics(ctx context.Context, projectIDs []string, regions []string, models []string) (map[string]*RawModelQuota, error)
 }
 
 // QuotaRequestClient wraps the GCP Cloud Quotas API.
@@ -52,10 +52,6 @@ type UsageRequestClient interface {
 	makeUsageRequest(ctx context.Context, req *monitoringpb.ListTimeSeriesRequest) (TimeSeriesIterator, error)
 }
 
-// ============================================================================
-// Types
-// ============================================================================
-
 type RawModelQuota struct {
 	ProjectId  string `json:"projectId"`
 	Model      string `json:"model"`
@@ -72,10 +68,6 @@ func (mqc *RawModelQuota) GetKey() (string, error) {
 	}
 	return fmt.Sprintf("%s/%s/%s", strings.ToLower(mqc.ProjectId), strings.ToLower(mqc.Region), strings.ToLower(mqc.Model)), nil
 }
-
-// ============================================================================
-// Production GCP Implementation
-// ============================================================================
 
 type GCPClient struct {
 	projectLimits    map[string]pb.ModelLimit
@@ -154,7 +146,7 @@ func (c *GCPUsageRequestClient) makeUsageRequest(ctx context.Context, req *monit
 	return c.monitoringMetricClient.ListTimeSeries(ctx, req), nil
 }
 
-func (gqc *GCPClient) FetchQuotas(ctx context.Context, projectIDs []string, regions []string, models []string) (map[string]*RawModelQuota, error) {
+func (gqc *GCPClient) FetchMetrics(ctx context.Context, projectIDs []string, regions []string, models []string) (map[string]*RawModelQuota, error) {
 	resp := map[string]*RawModelQuota{}
 
 	type projectData struct {
