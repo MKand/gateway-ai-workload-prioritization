@@ -29,16 +29,85 @@ const (
 	FallbackMaxTPM                = 2000000
 )
 
-type GCPQuotaClient struct {
+type GCPClient struct {
 	projectLimits    map[string]governor.ModelLimit
 	orgLimits        map[string]governor.ModelLimit
-	quotaClient      *cloudquotas.Client
-	monitoringClient *monitoring.MetricClient
+	quotaClient      *GCPQuotaRequestClient
+	monitoringClient *GCPUsageRequestClient
 	orgID            string
 }
 
-func NewGCPQuotaClient(ctx context.Context, orgID string, projectLimits, orgLimits map[string]governor.ModelLimit,
-	opts ...option.ClientOption) (*GCPQuotaClient, error) {
+type QuotaRequestClient interface {
+	fetchQuotaInfo(ctx context.Context, projectID, quotaID string) (*cloudquotaspb.QuotaInfo, error)
+}
+
+type UsageRequestClient interface {
+	fetchUsageInfo(ctx context.Context, projectID, metricType string) (map[string]int64, error)
+}
+
+type MockQuotaRequestClient struct {
+}
+
+type MockUsageRequestClient struct {
+}
+
+type GCPQuotaRequestClient struct {
+	cloudQuotasClient *cloudquotas.Client
+}
+
+type GCPUsageRequestClient struct {
+	monitoringMetricClient *monitoring.MetricClient
+}
+
+func NewGCPQuotaRequestClient(ctx context.Context, opts ...option.ClientOption) (*GCPQuotaRequestClient, error) {
+	quotaClient, err := cloudquotas.NewClient(ctx, opts...)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create cloudquotas client: %w", err)
+	}
+
+	return &GCPQuotaRequestClient{
+		cloudQuotasClient: quotaClient,
+	}, nil
+}
+
+type QuotaRequest interface {
+	makeQuotaRequest(ctx context.Context, req *cloudquotaspb.GetQuotaInfoRequest) (*cloudquotaspb.QuotaInfo, error)
+}
+
+func (c *GCPQuotaRequestClient) makeQuotaRequest(ctx context.Context, req *cloudquotaspb.GetQuotaInfoRequest) (*cloudquotaspb.QuotaInfo, error) {
+	if c.cloudQuotasClient == nil {
+		return nil, fmt.Errorf("cannot retreive quota info with a nil quota request client")
+	}
+	resp, err := c.cloudQuotasClient.GetQuotaInfo(ctx, req)
+	if err != nil {
+		return nil, err
+	}
+	return resp, nil
+}
+
+func NewGCPUsageRequestClient(ctx context.Context, opts ...option.ClientOption) (*GCPUsageRequestClient, error) {
+	monitoringClient, err := monitoring.NewMetricClient(ctx, opts...)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create monitoring client: %w", err)
+	}
+	return &GCPUsageRequestClient{
+		monitoringMetricClient: monitoringClient,
+	}, err
+}
+
+type UsageRequest interface {
+	makeUsageRequest(ctx context.Context, req *monitoringpb.ListTimeSeriesRequest) (*monitoring.TimeSeriesIterator, error)
+}
+
+func (c *GCPUsageRequestClient) makeUsageRequest(ctx context.Context, req *monitoringpb.ListTimeSeriesRequest) (*monitoring.TimeSeriesIterator, error) {
+	if c.monitoringMetricClient == nil {
+		return nil, fmt.Errorf("cannot retreive metrics with a nil monitoring metric client")
+	}
+	return c.monitoringMetricClient.ListTimeSeries(ctx, req), nil
+}
+
+func NewGCPClient(ctx context.Context, orgID string, projectLimits, orgLimits map[string]governor.ModelLimit,
+	quotaClient *GCPQuotaRequestClient, monitoringClient *GCPUsageRequestClient) (*GCPClient, error) {
 
 	if orgID == "" {
 		return nil, errors.New("org ID cannot be an empty string.")
@@ -50,17 +119,11 @@ func NewGCPQuotaClient(ctx context.Context, orgID string, projectLimits, orgLimi
 	if orgLimits == nil {
 		return nil, errors.New("org limits map cannot be nil.")
 	}
+	quotaClient = quotaClient
 
-	quotaClient, err := cloudquotas.NewClient(ctx, opts...)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create cloudquotas client: %w", err)
-	}
-	monitoringClient, err := monitoring.NewMetricClient(ctx, opts...)
-	if err != nil {
-		quotaClient.Close()
-		return nil, fmt.Errorf("failed to create monitoring client: %w", err)
-	}
-	return &GCPQuotaClient{
+	monitoringClient = monitoringClient
+
+	return &GCPClient{
 		orgID:            orgID,
 		projectLimits:    projectLimits,
 		orgLimits:        orgLimits,
@@ -69,7 +132,7 @@ func NewGCPQuotaClient(ctx context.Context, orgID string, projectLimits, orgLimi
 	}, nil
 }
 
-func (gqc *GCPQuotaClient) fetchUsage(ctx context.Context, projectID, metricType string) (map[string]int64, error) {
+func (gqc *GCPClient) fetchUsageInfo(ctx context.Context, projectID, metricType string) (map[string]int64, error) {
 	usage := make(map[string]int64)
 	// 1. Define the time interval (querying the last few minutes to account for ingestion delay)
 	now := time.Now()
@@ -97,7 +160,10 @@ func (gqc *GCPQuotaClient) fetchUsage(ctx context.Context, projectID, metricType
 		},
 	}
 	// 2. Execute the query
-	it := gqc.monitoringClient.ListTimeSeries(ctx, req)
+	it, err := gqc.monitoringClient.makeUsageRequest(ctx, req)
+	if err != nil {
+		return nil, fmt.Errorf("Cannot retrive usage metrics. %w", err)
+	}
 	// 3. Iterate through the aggregated timeseries results
 	for {
 		resp, err := it.Next()
@@ -123,20 +189,20 @@ func (gqc *GCPQuotaClient) fetchUsage(ctx context.Context, projectID, metricType
 	return usage, nil
 }
 
-func (gqc *GCPQuotaClient) fetchQuotaInfo(ctx context.Context, projectID, quotaID string) (*cloudquotaspb.QuotaInfo, error) {
+func (gqc *GCPClient) fetchQuotaInfo(ctx context.Context, projectID, quotaID string) (*cloudquotaspb.QuotaInfo, error) {
 	// Resource name format: projects/{project}/locations/global/services/aiplatform.googleapis.com/quotaInfos/{quotaInfo}
 	resourceName := fmt.Sprintf("projects/%s/locations/global/services/aiplatform.googleapis.com/quotaInfos/%s", projectID, quotaID)
 	req := &cloudquotaspb.GetQuotaInfoRequest{
 		Name: resourceName,
 	}
-	info, err := gqc.quotaClient.GetQuotaInfo(ctx, req)
+	info, err := gqc.quotaClient.makeQuotaRequest(ctx, req)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get quota info for %s: %w", resourceName, err)
 	}
 	return info, nil
 }
 
-func (gqc *GCPQuotaClient) resolveLimit(limits map[string]governor.ModelLimit, project, region, model string) governor.ModelLimit {
+func (gqc *GCPClient) resolveLimit(limits map[string]governor.ModelLimit, project, region, model string) governor.ModelLimit {
 	modelLower := strings.ToLower(model)
 	regionLower := strings.ToLower(region)
 	projectLower := strings.ToLower(project)
@@ -240,7 +306,7 @@ func extractLimits(qi *cloudquotaspb.QuotaInfo, targetRegions, targetModels []st
 	return resp
 }
 
-func (gqc *GCPQuotaClient) FetchQuotas(ctx context.Context, projectIDs []string, regions []string, models []string) (map[string]*RawModelQuota, error) {
+func (gqc *GCPClient) FetchQuotas(ctx context.Context, projectIDs []string, regions []string, models []string) (map[string]*RawModelQuota, error) {
 
 	resp := map[string]*RawModelQuota{}
 
@@ -263,12 +329,12 @@ func (gqc *GCPQuotaClient) FetchQuotas(ctx context.Context, projectIDs []string,
 			return nil, fmt.Errorf("failed to fetch TPM limits for project %s: %w", p, err)
 		}
 
-		rpmUsage, err := gqc.fetchUsage(ctx, p, rpmMetricType)
+		rpmUsage, err := gqc.fetchUsageInfo(ctx, p, rpmMetricType)
 		if err != nil {
 			return nil, fmt.Errorf("failed to fetch RPM usage for project %s: %w", p, err)
 		}
 
-		tpmUsage, err := gqc.fetchUsage(ctx, p, tpmMetricType)
+		tpmUsage, err := gqc.fetchUsageInfo(ctx, p, tpmMetricType)
 		if err != nil {
 			return nil, fmt.Errorf("failed to fetch TPM usage for project %s: %w", p, err)
 		}

@@ -95,7 +95,7 @@ func TestExtractLimits(t *testing.T) {
 }
 
 func TestGCPQuotaClient_ResolveLimit(t *testing.T) {
-	gqc := &GCPQuotaClient{}
+	gqc := &GCPClient{}
 	tests := []struct {
 		name    string
 		limits  map[string]governor.ModelLimit
