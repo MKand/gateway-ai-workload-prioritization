@@ -86,31 +86,46 @@ The Control Plane executes asynchronously on macro timescales (30s intervals) an
 * **Jittered Polling**: Uses a 30-second interval with jitter and exponential backoff to avoid consuming GCP quota management rate limits.
 
 ### 2. Dynamic Headroom & Safety Margin Calculator
-* Under Vertex AI Dynamic Shared Quotas (DSQ 3.0), quota capacity is pooled and shared across the GCP Organization. The calculator computes usable headroom:
-  $$\text{Usable Headroom} = (\text{Effective Quota Ceiling} \times 0.95) - \text{GCP Cloud Usage}$$
-* **Safety Margin**: Retains a 5% safety buffer so the Governor always sheds or downgrades traffic *before* Vertex AI's blunt backend 429 occurs.
-* **Partitioning**: Computes independent headroom per model family (`gemini-3.5-pro`, `gemini-3.5-flash`, `gemini-3.0-flash`) and per region (`us-central1`, `us-east4`).
+Under Vertex AI **Dynamic Shared Quotas (DSQ 3.0)**, quota capacity is pooled and shared at the **GCP Organization** and **Billing Account** level rather than being static per-project buckets. 
+
+#### A. How Org-Level Quotas are Determined
+The organization's quota tier is dynamically calculated by GCP based on the **rolling 30-day spend** across all billing accounts in the organization. Each tier defines a **Baseline Throughput** limit for "Critical" traffic (protected from fair-share throttling) in Tokens Per Minute (TPM):
+
+> [!WARNING]
+> **Disclaimer**: The spend thresholds, tiers, and baseline throughput allocations defined below are subject to change by Google Cloud Platform in the future. The Reconciler is designed to adapt to these changes dynamically by fetching limits at runtime rather than hardcoding thresholds.
+
+
+| Model Family | Tier | Spend (30 Days) | Critical Traffic TPM (Org-Level) |
+| :--- | :--- | :--- | :--- |
+| **Pro Models** | Tier 1 <br> Tier 2 <br> Tier 3 | $10 - $250 <br> $250 - $2,000 <br> > $2,000 | 500,000 <br> 1,000,000 <br> 2,000,000 |
+| **Flash / Flash-Lite** | Tier 1 <br> Tier 2 <br> Tier 3 | $10 - $250 <br> $250 - $2,000 <br> > $2,000 | 2,000,000 <br> 4,000,000 <br> 10,000,000 |
+
+*   **Opportunistic Bursting**: Traffic exceeding the baseline is "Sheddable Plus" and subject to standard GCP `429` throttling during high congestion.
+*   **Safety Margin**: The Reconciler retains a configurable safety buffer (default `5%` or `0.05` to `0.3` for tests) to shed or fallback traffic *before* hitting these limits:
+    $$\text{Usable Headroom} = (\text{Effective Quota Ceiling} \times (1 - \text{SafetyMargin})) - \text{GCP Cloud Usage}$$
 
 ### 3. Declarative Policy Watcher
 * **Configuration Hot-Reload**: Uses `fsnotify` in Go to monitor `config/governor.yaml`.
 * **DAG Validation**: Validates fallback cascades, verifies model names, and detects circular dependency graphs.
 * **Zero-Downtime Reload**: Compiles new policy trees in memory and publishes them without dropping in-flight connections.
 
-### 4. Lock-Free State Synchronization Engine
-To push state from the Control Plane to Data Plane workers with **zero lock contention**:
-* Uses Go 1.25+ `atomic.Pointer[QuotaSnapshot]` for lock-free snapshot replacement:
-  ```go
-  type QuotaSnapshot struct {
-      ModelBuckets   map[string]*TokenBucket
-      FallbackDAG    *PolicyGraph
-      ActiveRegion   string
-      LastSyncedAt   time.Time
-  }
-  
-  // Data plane reads atomically on every request without Mutex blocking:
-  var globalState atomic.Pointer[QuotaSnapshot]
-  ```
-* When new limits are calculated, the Control Plane allocates a new `QuotaSnapshot` and executes a single atomic pointer swap.
+### 4. gRPC-Based State Synchronization & Lock-Free Push
+Since the Control Plane and Data Plane execute as **separate processes** (to isolate the heavy reconciler network logic from the sub-millisecond gRPC proxy path), they synchronize state over the network:
+
+1.  **gRPC Streaming Interface**: The Control Plane runs a **`QuotaDiscoveryService`** gRPC server.
+2.  **Streaming Push**: Every Data Plane node establishes a server-streaming gRPC connection (`StreamQuotas`) to the Control Plane.
+3.  **Atomic Pointer Swap (Local)**: Whenever the Reconciler calculates a new snapshot, it serializes it as a Protobuf message and streams it to all connected Data Planes. Upon receiving the stream payload, the Data Plane node performs a lock-free **`atomic.Pointer` swap** locally in its memory space, ensuring worker threads can read the quotas in sub-microseconds without Mutex locking.
+
+```go
+type QuotaSnapshot struct {
+    OrgQuotas     map[string]*ModelQuota
+    ProjectQuotas map[string]*ModelQuota
+    LastSyncedAt  time.Time
+}
+
+// Data plane workers read this pointer atomically on every request without blocking:
+var globalState atomic.Pointer[QuotaSnapshot]
+```
 
 ### 5. Telemetry & Metric Exporter
 * Exposes a Prometheus `/metrics` endpoint on port `9090`:
