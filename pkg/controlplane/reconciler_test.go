@@ -7,17 +7,45 @@ import (
 	"testing"
 	"time"
 
+	"cloud.google.com/go/monitoring/apiv3/v2/monitoringpb"
 	"github.com/MKand/gateway-ai-workload-prioritization/pkg/governor"
+	"google.golang.org/genproto/googleapis/api/metric"
+	"google.golang.org/genproto/googleapis/api/monitoredres"
 )
 
+func makeMockTimeSeries(region, model string, value int64) *monitoringpb.TimeSeries {
+	return &monitoringpb.TimeSeries{
+		Resource: &monitoredres.MonitoredResource{
+			Labels: map[string]string{
+				"location": region,
+			},
+		},
+		Metric: &metric.Metric{
+			Labels: map[string]string{
+				"base_model": model,
+			},
+		},
+		Points: []*monitoringpb.Point{
+			{
+				Value: &monitoringpb.TypedValue{
+					Value: &monitoringpb.TypedValue_Int64Value{
+						Int64Value: value,
+					},
+				},
+			},
+		},
+	}
+}
+
 // GetTestReconciler helper accepts the config and store from the test
-func GetTestReconciler(cfg *governor.Config, store SnapshotStore) *Reconciler {
-	quotaClient := NewMockQuotaClient(cfg.DefaultProjectLimits, cfg.DefaultOrgLimits)
-	reconciler, err := NewReconciler(cfg, quotaClient, store)
+func GetTestReconciler(cfg *governor.Config, store SnapshotStore) (*Reconciler, *GCPClient) {
+	ctx := context.Background()
+	gcpClient := NewMockGCPClient(ctx, cfg.DefaultProjectLimits, cfg.DefaultOrgLimits)
+	reconciler, err := NewReconciler(cfg, gcpClient, store)
 	if err != nil {
 		panic(err)
 	}
-	return reconciler
+	return reconciler, gcpClient
 }
 
 func TestReconcile_AggregatesAndCalculates(t *testing.T) {
@@ -45,7 +73,26 @@ func TestReconcile_AggregatesAndCalculates(t *testing.T) {
 		},
 	}
 
-	reconciler := GetTestReconciler(cfg, store)
+	reconciler, gcpClient := GetTestReconciler(cfg, store)
+
+	// Helper to create iterator for a project and value
+	makeIterator := func(value int64) TimeSeriesIterator {
+		var items []*monitoringpb.TimeSeries
+		for _, r := range cfg.Regions {
+			for _, m := range cfg.Models {
+				items = append(items, makeMockTimeSeries(r, m, value))
+			}
+		}
+		return &MockTimeSeriesIterator{Items: items}
+	}
+
+	mockUsage := gcpClient.monitoringClient.(*MockUsageRequestClient)
+	mockUsage.ReturnValues = []TimeSeriesIterator{
+		makeIterator(100),   // projecta RPM
+		makeIterator(50000), // projecta TPM
+		makeIterator(100),   // projectb RPM
+		makeIterator(50000), // projectb TPM
+	}
 
 	err := reconciler.reconcile(ctx)
 	if err != nil {
@@ -106,7 +153,7 @@ func TestReconciler_LifecycleStart(t *testing.T) {
 		},
 	}
 
-	reconciler := GetTestReconciler(cfg, spyStore)
+	reconciler, _ := GetTestReconciler(cfg, spyStore)
 	ctx, cancel := context.WithCancel(context.Background())
 
 	errChan := make(chan error, 1)
@@ -149,7 +196,20 @@ func TestReconcile_ZeroQuotaSafety(t *testing.T) {
 	}
 
 	// 2. Setup Reconciler
-	reconciler := GetTestReconciler(cfg, store)
+	reconciler, gcpClient := GetTestReconciler(cfg, store)
+
+	makeIterator := func(value int64) TimeSeriesIterator {
+		return &MockTimeSeriesIterator{
+			Items: []*monitoringpb.TimeSeries{
+				makeMockTimeSeries("us-central1", "model1_pro", value),
+			},
+		}
+	}
+	mockUsage := gcpClient.monitoringClient.(*MockUsageRequestClient)
+	mockUsage.ReturnValues = []TimeSeriesIterator{
+		makeIterator(100), // projecta RPM
+		makeIterator(0),   // projecta TPM
+	}
 
 	// 3. Run reconciliation (verifies it doesn't crash/panic with division-by-zero)
 	err := reconciler.reconcile(ctx)
@@ -205,12 +265,13 @@ func TestReconciler_ErrorResilience(t *testing.T) {
 	}
 
 	// 2. Get client and reconciler
-	client := NewMockQuotaClient(cfg.DefaultProjectLimits, cfg.DefaultOrgLimits)
+	client := NewMockGCPClient(ctx, cfg.DefaultProjectLimits, cfg.DefaultOrgLimits)
 	reconciler, err := NewReconciler(cfg, client, store)
 	if err != nil {
 		t.Fatalf("Failed to create reconciler: %v", err)
 	}
-	client.Err = errors.New("temporary gcp timeout")
+	mockQuota := client.quotaClient.(*MockQuotaRequestClient)
+	mockQuota.Err = errors.New("temporary gcp timeout")
 
 	err = reconciler.reconcile(ctx)
 	if err == nil {

@@ -32,23 +32,21 @@ const (
 type GCPClient struct {
 	projectLimits    map[string]governor.ModelLimit
 	orgLimits        map[string]governor.ModelLimit
-	quotaClient      *GCPQuotaRequestClient
-	monitoringClient *GCPUsageRequestClient
+	quotaClient      QuotaRequestClient
+	monitoringClient UsageRequestClient
 	orgID            string
 }
 
 type QuotaRequestClient interface {
-	fetchQuotaInfo(ctx context.Context, projectID, quotaID string) (*cloudquotaspb.QuotaInfo, error)
+	makeQuotaRequest(ctx context.Context, req *cloudquotaspb.GetQuotaInfoRequest) (*cloudquotaspb.QuotaInfo, error)
+}
+
+type TimeSeriesIterator interface {
+	Next() (*monitoringpb.TimeSeries, error)
 }
 
 type UsageRequestClient interface {
-	fetchUsageInfo(ctx context.Context, projectID, metricType string) (map[string]int64, error)
-}
-
-type MockQuotaRequestClient struct {
-}
-
-type MockUsageRequestClient struct {
+	makeUsageRequest(ctx context.Context, req *monitoringpb.ListTimeSeriesRequest) (TimeSeriesIterator, error)
 }
 
 type GCPQuotaRequestClient struct {
@@ -59,6 +57,7 @@ type GCPUsageRequestClient struct {
 	monitoringMetricClient *monitoring.MetricClient
 }
 
+
 func NewGCPQuotaRequestClient(ctx context.Context, opts ...option.ClientOption) (*GCPQuotaRequestClient, error) {
 	quotaClient, err := cloudquotas.NewClient(ctx, opts...)
 	if err != nil {
@@ -68,10 +67,6 @@ func NewGCPQuotaRequestClient(ctx context.Context, opts ...option.ClientOption) 
 	return &GCPQuotaRequestClient{
 		cloudQuotasClient: quotaClient,
 	}, nil
-}
-
-type QuotaRequest interface {
-	makeQuotaRequest(ctx context.Context, req *cloudquotaspb.GetQuotaInfoRequest) (*cloudquotaspb.QuotaInfo, error)
 }
 
 func (c *GCPQuotaRequestClient) makeQuotaRequest(ctx context.Context, req *cloudquotaspb.GetQuotaInfoRequest) (*cloudquotaspb.QuotaInfo, error) {
@@ -95,11 +90,7 @@ func NewGCPUsageRequestClient(ctx context.Context, opts ...option.ClientOption) 
 	}, err
 }
 
-type UsageRequest interface {
-	makeUsageRequest(ctx context.Context, req *monitoringpb.ListTimeSeriesRequest) (*monitoring.TimeSeriesIterator, error)
-}
-
-func (c *GCPUsageRequestClient) makeUsageRequest(ctx context.Context, req *monitoringpb.ListTimeSeriesRequest) (*monitoring.TimeSeriesIterator, error) {
+func (c *GCPUsageRequestClient) makeUsageRequest(ctx context.Context, req *monitoringpb.ListTimeSeriesRequest) (TimeSeriesIterator, error) {
 	if c.monitoringMetricClient == nil {
 		return nil, fmt.Errorf("cannot retreive metrics with a nil monitoring metric client")
 	}
@@ -107,7 +98,7 @@ func (c *GCPUsageRequestClient) makeUsageRequest(ctx context.Context, req *monit
 }
 
 func NewGCPClient(ctx context.Context, orgID string, projectLimits, orgLimits map[string]governor.ModelLimit,
-	quotaClient *GCPQuotaRequestClient, monitoringClient *GCPUsageRequestClient) (*GCPClient, error) {
+	quotaClient QuotaRequestClient, monitoringClient UsageRequestClient) (*GCPClient, error) {
 
 	if orgID == "" {
 		return nil, errors.New("org ID cannot be an empty string.")
@@ -119,10 +110,6 @@ func NewGCPClient(ctx context.Context, orgID string, projectLimits, orgLimits ma
 	if orgLimits == nil {
 		return nil, errors.New("org limits map cannot be nil.")
 	}
-	quotaClient = quotaClient
-
-	monitoringClient = monitoringClient
-
 	return &GCPClient{
 		orgID:            orgID,
 		projectLimits:    projectLimits,
