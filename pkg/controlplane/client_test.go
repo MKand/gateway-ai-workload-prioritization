@@ -4,7 +4,7 @@ import (
 	"testing"
 
 	"cloud.google.com/go/cloudquotas/apiv1/cloudquotaspb"
-	"github.com/MKand/gateway-ai-workload-prioritization/pkg/governor"
+	pb "github.com/MKand/gateway-ai-workload-prioritization/gen/go/governor/v1"
 )
 
 func TestExtractLimits(t *testing.T) {
@@ -98,93 +98,93 @@ func TestGCPQuotaClient_ResolveLimit(t *testing.T) {
 	gqc := &GCPClient{}
 	tests := []struct {
 		name    string
-		limits  map[string]governor.ModelLimit
+		limits  map[string]pb.ModelLimit
 		project string
 		region  string
 		model   string
-		want    governor.ModelLimit
+		want    pb.ModelLimit
 	}{
 		{
 			name: "exact_match_project_region_model",
-			limits: map[string]governor.ModelLimit{
+			limits: map[string]pb.ModelLimit{
 				"projecta/us-central1/modela": {
-					MaxRPM: 100,
-					MaxTPM: 10000,
+					MaxRpm: 100,
+					MaxTpm: 10000,
 				},
 				"projecta/us-central1/modelb": {
-					MaxRPM: 70,
-					MaxTPM: 70000,
+					MaxRpm: 70,
+					MaxTpm: 70000,
 				},
 			},
 			project: "projecta",
 			region:  "us-central1",
 			model:   "modela",
-			want: governor.ModelLimit{
-				MaxRPM: 100,
-				MaxTPM: 10000,
+			want: pb.ModelLimit{
+				MaxRpm: 100,
+				MaxTpm: 10000,
 			},
 		},
 		// Region/Model Match: Matches region/model when project is empty.
 		{
 			name: "exact_match_region_model_empty_project",
-			limits: map[string]governor.ModelLimit{
+			limits: map[string]pb.ModelLimit{
 				"us-central1/modela": {
-					MaxRPM: 100,
-					MaxTPM: 10000,
+					MaxRpm: 100,
+					MaxTpm: 10000,
 				},
 				"projecta/us-central1/modelb": {
-					MaxRPM: 70,
-					MaxTPM: 70000,
+					MaxRpm: 70,
+					MaxTpm: 70000,
 				},
 			},
 			project: "",
 			region:  "us-central1",
 			model:   "modela",
-			want: governor.ModelLimit{
-				MaxRPM: 100,
-				MaxTPM: 10000,
+			want: pb.ModelLimit{
+				MaxRpm: 100,
+				MaxTpm: 10000,
 			},
 		},
 		//Model Match: Matches model
 		{
 			name: "exact_match_model",
-			limits: map[string]governor.ModelLimit{
+			limits: map[string]pb.ModelLimit{
 				"modela": {
-					MaxRPM: 100,
-					MaxTPM: 10000,
+					MaxRpm: 100,
+					MaxTpm: 10000,
 				},
 				"projecta/us-central1/modelb": {
-					MaxRPM: 70,
-					MaxTPM: 70000,
+					MaxRpm: 70,
+					MaxTpm: 70000,
 				},
 			},
 			project: "",
 			region:  "us-central1",
 			model:   "modela",
-			want: governor.ModelLimit{
-				MaxRPM: 100,
-				MaxTPM: 10000,
+			want: pb.ModelLimit{
+				MaxRpm: 100,
+				MaxTpm: 10000,
 			},
 		},
 		// Substring Match: Matches a model family suffix.
 		{
 			name: "exact_match_model",
-			limits: map[string]governor.ModelLimit{
+			limits: map[string]pb.ModelLimit{
 				"flash-lite": {
-					MaxRPM: 100,
-					MaxTPM: 10000,
+					MaxRpm: 100,
+					MaxTpm: 10000,
 				},
 				"flash": {
-					MaxRPM: 70,
-					MaxTPM: 70000,
+					MaxRpm: 70,
+					MaxTpm: 70000,
 				},
 			},
 			project: "abc",
 			region:  "us-central1",
 			model:   "modela-flash-lite",
-			want: governor.ModelLimit{
-				MaxRPM: 100,
-				MaxTPM: 10000,
+			want: pb.ModelLimit{
+				MaxRpm: 100,
+				MaxTpm: 10000,
 			},
 		},
 	}
@@ -195,8 +195,8 @@ func TestGCPQuotaClient_ResolveLimit(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			got := gqc.resolveLimit(tt.limits, tt.project, tt.region, tt.model)
-			if got.MaxRPM != tt.want.MaxRPM || got.MaxTPM != tt.want.MaxTPM {
-				t.Errorf("resolveLimit() = %+v, want RPM %d / TPM %d", got, tt.want.MaxRPM, tt.want.MaxTPM)
+			if got.MaxRpm != tt.want.MaxRpm || got.MaxTpm != tt.want.MaxTpm {
+				t.Errorf("resolveLimit() = %+v, want RPM %d / TPM %d", got, tt.want.MaxRpm, tt.want.MaxTpm)
 			}
 		})
 	}

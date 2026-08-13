@@ -11,7 +11,7 @@ import (
 	"cloud.google.com/go/cloudquotas/apiv1/cloudquotaspb"
 	monitoring "cloud.google.com/go/monitoring/apiv3"
 	"cloud.google.com/go/monitoring/apiv3/v2/monitoringpb"
-	"github.com/MKand/gateway-ai-workload-prioritization/pkg/governor"
+	pb "github.com/MKand/gateway-ai-workload-prioritization/gen/go/governor/v1"
 	"google.golang.org/api/iterator"
 	"google.golang.org/api/option"
 	"google.golang.org/protobuf/types/known/durationpb"
@@ -57,20 +57,20 @@ type UsageRequestClient interface {
 // ============================================================================
 
 type RawModelQuota struct {
-	ProjectID  string `json:"projectID"`
+	ProjectId  string `json:"projectId"`
 	Model      string `json:"model"`
 	Region     string `json:"region"`
-	MaxTPM     int64  `json:"maxTPM"`
-	MaxRPM     int64  `json:"maxRPM"`
-	CurrentRPM int64  `json:"currentRPM"`
-	CurrentTPM int64  `json:"currentTPM"`
+	MaxTpm     int64  `json:"maxTpm"`
+	MaxRpm     int64  `json:"maxRpm"`
+	CurrentRpm int64  `json:"currentRpm"`
+	CurrentTpm int64  `json:"currentTpm"`
 }
 
 func (mqc *RawModelQuota) GetKey() (string, error) {
-	if mqc.ProjectID == "" || mqc.Region == "" || mqc.Model == "" {
-		return "", fmt.Errorf("need string value for project=%s, region=%s and model=%s", mqc.ProjectID, mqc.Region, mqc.Model)
+	if mqc.ProjectId == "" || mqc.Region == "" || mqc.Model == "" {
+		return "", fmt.Errorf("need string value for project=%s, region=%s and model=%s", mqc.ProjectId, mqc.Region, mqc.Model)
 	}
-	return fmt.Sprintf("%s/%s/%s", strings.ToLower(mqc.ProjectID), strings.ToLower(mqc.Region), strings.ToLower(mqc.Model)), nil
+	return fmt.Sprintf("%s/%s/%s", strings.ToLower(mqc.ProjectId), strings.ToLower(mqc.Region), strings.ToLower(mqc.Model)), nil
 }
 
 // ============================================================================
@@ -78,14 +78,14 @@ func (mqc *RawModelQuota) GetKey() (string, error) {
 // ============================================================================
 
 type GCPClient struct {
-	projectLimits    map[string]governor.ModelLimit
-	orgLimits        map[string]governor.ModelLimit
+	projectLimits    map[string]pb.ModelLimit
+	orgLimits        map[string]pb.ModelLimit
 	quotaClient      QuotaRequestClient
 	monitoringClient UsageRequestClient
 	orgID            string
 }
 
-func NewGCPClient(ctx context.Context, orgID string, projectLimits, orgLimits map[string]governor.ModelLimit,
+func NewGCPClient(ctx context.Context, orgID string, projectLimits, orgLimits map[string]pb.ModelLimit,
 	quotaClient QuotaRequestClient, monitoringClient UsageRequestClient) (*GCPClient, error) {
 
 	if orgID == "" {
@@ -202,10 +202,10 @@ func (gqc *GCPClient) FetchQuotas(ctx context.Context, projectIDs []string, regi
 			resp[oKey] = &RawModelQuota{
 				Region:     r,
 				Model:      m,
-				MaxRPM:     orgLimit.MaxRPM,
-				MaxTPM:     orgLimit.MaxTPM,
-				CurrentRPM: 0,
-				CurrentTPM: 0,
+				MaxRpm:     orgLimit.MaxRpm,
+				MaxTpm:     orgLimit.MaxTpm,
+				CurrentRpm: 0,
+				CurrentTpm: 0,
 			}
 
 			// 2. Add Project-level quotas (with project limits, simulated usage)
@@ -213,16 +213,16 @@ func (gqc *GCPClient) FetchQuotas(ctx context.Context, projectIDs []string, regi
 				data := gcpData[p]
 				key := fmt.Sprintf("%s/%s", strings.ToLower(r), strings.ToLower(m))
 
-				var maxRPM, maxTPM, rpmUsage, tpmUsage int64
+				var maxRpm, maxTpm, rpmUsage, tpmUsage int64
 				if limit, exists := data.rpmLimits[key]; exists && limit > 0 {
-					maxRPM = limit
+					maxRpm = limit
 				} else {
-					maxRPM = gqc.resolveLimit(gqc.projectLimits, p, r, m).MaxRPM
+					maxRpm = gqc.resolveLimit(gqc.projectLimits, p, r, m).MaxRpm
 				}
 				if limit, exists := data.tpmLimits[key]; exists && limit > 0 {
-					maxTPM = limit
+					maxTpm = limit
 				} else {
-					maxTPM = gqc.resolveLimit(gqc.projectLimits, p, r, m).MaxTPM
+					maxTpm = gqc.resolveLimit(gqc.projectLimits, p, r, m).MaxTpm
 				}
 
 				if usage, exists := data.rpmUsage[key]; exists {
@@ -237,13 +237,13 @@ func (gqc *GCPClient) FetchQuotas(ctx context.Context, projectIDs []string, regi
 					tpmUsage = 0
 				}
 				prmq := &RawModelQuota{
-					ProjectID:  p,
+					ProjectId:  p,
 					Region:     r,
 					Model:      m,
-					MaxRPM:     maxRPM,
-					MaxTPM:     maxTPM,
-					CurrentRPM: rpmUsage,
-					CurrentTPM: tpmUsage,
+					MaxRpm:     maxRpm,
+					MaxTpm:     maxTpm,
+					CurrentRpm: rpmUsage,
+					CurrentTpm: tpmUsage,
 				}
 				pKey, err := prmq.GetKey()
 				if err != nil {
@@ -317,7 +317,7 @@ func (gqc *GCPClient) fetchQuotaInfo(ctx context.Context, projectID, quotaID str
 	return info, nil
 }
 
-func (gqc *GCPClient) resolveLimit(limits map[string]governor.ModelLimit, project, region, model string) governor.ModelLimit {
+func (gqc *GCPClient) resolveLimit(limits map[string]pb.ModelLimit, project, region, model string) pb.ModelLimit {
 	modelLower := strings.ToLower(model)
 	regionLower := strings.ToLower(region)
 	projectLower := strings.ToLower(project)
@@ -350,7 +350,7 @@ func (gqc *GCPClient) resolveLimit(limits map[string]governor.ModelLimit, projec
 			return limit
 		}
 	}
-	return governor.ModelLimit{MaxRPM: FallbackMaxRPM, MaxTPM: FallbackMaxTPM}
+	return pb.ModelLimit{MaxRpm: FallbackMaxRPM, MaxTpm: FallbackMaxTPM}
 }
 
 func extractLimits(qi *cloudquotaspb.QuotaInfo, targetRegions, targetModels []string) map[string]int64 {
@@ -453,7 +453,7 @@ func (c *MockUsageRequestClient) makeUsageRequest(ctx context.Context, req *moni
 	return val, nil
 }
 
-func NewMockGCPClient(ctx context.Context, projectLimits, orgLimits map[string]governor.ModelLimit) *GCPClient {
+func NewMockGCPClient(ctx context.Context, projectLimits, orgLimits map[string]pb.ModelLimit) *GCPClient {
 	return &GCPClient{
 		orgID:            "mockorgid",
 		projectLimits:    projectLimits,

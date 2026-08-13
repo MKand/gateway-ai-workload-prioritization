@@ -7,7 +7,9 @@ import (
 	"strings"
 	"time"
 
+	pb "github.com/MKand/gateway-ai-workload-prioritization/gen/go/governor/v1"
 	"github.com/MKand/gateway-ai-workload-prioritization/pkg/governor"
+	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 type Reconciler struct {
@@ -57,24 +59,23 @@ func (r *Reconciler) reconcile(ctx context.Context) error {
 		return err
 	}
 
-	projectQuotas := make(map[string]*governor.ModelQuota)
-	orgQuotas := make(map[string]*governor.ModelQuota)
+	projectQuotas := make(map[string]*pb.ModelQuota)
+	orgQuotas := make(map[string]*pb.ModelQuota)
 
 	for _, raw := range rawQuotas {
-		if raw.ProjectID == "" {
+		if raw.ProjectId == "" {
 			// ==========================================
 			// Org-Level Quota Limit (from Client Org Fetch)
 			// ==========================================
 			orgKey := fmt.Sprintf("%s/%s", strings.ToLower(raw.Region), strings.ToLower(raw.Model))
 			if _, exists := orgQuotas[orgKey]; !exists {
-				orgQuotas[orgKey] = &governor.ModelQuota{
+				orgQuotas[orgKey] = &pb.ModelQuota{
 					Model:  raw.Model,
 					Region: raw.Region,
 				}
 			}
-			// Set the Org-level limits directly (not aggregated/summed from projects)
-			orgQuotas[orgKey].MaxRPM = raw.MaxRPM
-			orgQuotas[orgKey].MaxTPM = raw.MaxTPM
+			orgQuotas[orgKey].MaxRpm = raw.MaxRpm
+			orgQuotas[orgKey].MaxTpm = raw.MaxTpm
 		} else {
 			// ==========================================
 			// Project-Level Quota
@@ -84,45 +85,43 @@ func (r *Reconciler) reconcile(ctx context.Context) error {
 				return err
 			}
 
-			// Calculate project-level headroom and utilization
-			pUsableRPM := float64(raw.MaxRPM) * (1.0 - r.config.SafetyMargin)
-			pHeadroomRPM := int64(pUsableRPM) - raw.CurrentRPM
+			pUsableRPM := float64(raw.MaxRpm) * (1.0 - r.config.SafetyMargin)
+			pHeadroomRPM := int64(pUsableRPM) - raw.CurrentRpm
 			var pUtilRPM float64
-			if raw.MaxRPM > 0 {
-				pUtilRPM = float64(raw.CurrentRPM) / float64(raw.MaxRPM)
+			if raw.MaxRpm > 0 {
+				pUtilRPM = float64(raw.CurrentRpm) / float64(raw.MaxRpm)
 			}
 
-			pUsableTPM := float64(raw.MaxTPM) * (1.0 - r.config.SafetyMargin)
-			pHeadroomTPM := int64(pUsableTPM) - raw.CurrentTPM
+			pUsableTPM := float64(raw.MaxTpm) * (1.0 - r.config.SafetyMargin)
+			pHeadroomTPM := int64(pUsableTPM) - raw.CurrentTpm
 			var pUtilTPM float64
-			if raw.MaxTPM > 0 {
-				pUtilTPM = float64(raw.CurrentTPM) / float64(raw.MaxTPM)
+			if raw.MaxTpm > 0 {
+				pUtilTPM = float64(raw.CurrentTpm) / float64(raw.MaxTpm)
 			}
 
-			projectQuotas[pKey] = &governor.ModelQuota{
-				ProjectID:      raw.ProjectID,
+			projectQuotas[pKey] = &pb.ModelQuota{
+				ProjectId:      raw.ProjectId,
 				Model:          raw.Model,
 				Region:         raw.Region,
-				MaxRPM:         raw.MaxRPM,
-				MaxTPM:         raw.MaxTPM,
-				CurrentRPM:     raw.CurrentRPM,
-				CurrentTPM:     raw.CurrentTPM,
-				HeadroomRPM:    pHeadroomRPM,
-				HeadroomTPM:    pHeadroomTPM,
-				UtilizationRPM: pUtilRPM,
-				UtilizationTPM: pUtilTPM,
+				MaxRpm:         raw.MaxRpm,
+				MaxTpm:         raw.MaxTpm,
+				CurrentRpm:     raw.CurrentRpm,
+				CurrentTpm:     raw.CurrentTpm,
+				HeadroomRpm:    pHeadroomRPM,
+				HeadroomTpm:    pHeadroomTPM,
+				UtilizationRpm: pUtilRPM,
+				UtilizationTpm: pUtilTPM,
 			}
 
-			// Aggregate project usage into Org-level quota
 			orgKey := fmt.Sprintf("%s/%s", strings.ToLower(raw.Region), strings.ToLower(raw.Model))
 			if _, exists := orgQuotas[orgKey]; !exists {
-				orgQuotas[orgKey] = &governor.ModelQuota{
+				orgQuotas[orgKey] = &pb.ModelQuota{
 					Model:  raw.Model,
 					Region: raw.Region,
 				}
 			}
-			orgQuotas[orgKey].CurrentRPM += raw.CurrentRPM
-			orgQuotas[orgKey].CurrentTPM += raw.CurrentTPM
+			orgQuotas[orgKey].CurrentRpm += raw.CurrentRpm
+			orgQuotas[orgKey].CurrentTpm += raw.CurrentTpm
 		}
 	}
 
@@ -130,24 +129,23 @@ func (r *Reconciler) reconcile(ctx context.Context) error {
 	// Post-Process Org-Level Quota Metrics
 	// ==========================================
 	for _, q := range orgQuotas {
-		usableRPM := float64(q.MaxRPM) * (1.0 - r.config.SafetyMargin)
-		q.HeadroomRPM = int64(usableRPM) - q.CurrentRPM
-		if q.MaxRPM > 0 {
-			q.UtilizationRPM = float64(q.CurrentRPM) / float64(q.MaxRPM)
+		usableRPM := float64(q.MaxRpm) * (1.0 - r.config.SafetyMargin)
+		q.HeadroomRpm = int64(usableRPM) - q.CurrentRpm
+		if q.MaxRpm > 0 {
+			q.UtilizationRpm = float64(q.CurrentRpm) / float64(q.MaxRpm)
 		}
 
-		usableTPM := float64(q.MaxTPM) * (1.0 - r.config.SafetyMargin)
-		q.HeadroomTPM = int64(usableTPM) - q.CurrentTPM
-		if q.MaxTPM > 0 {
-			q.UtilizationTPM = float64(q.CurrentTPM) / float64(q.MaxTPM)
+		usableTPM := float64(q.MaxTpm) * (1.0 - r.config.SafetyMargin)
+		q.HeadroomTpm = int64(usableTPM) - q.CurrentTpm
+		if q.MaxTpm > 0 {
+			q.UtilizationTpm = float64(q.CurrentTpm) / float64(q.MaxTpm)
 		}
 	}
 
-	// Save the dual-view snapshot
-	snapshot := &governor.QuotaSnapshot{
+	snapshot := &pb.QuotaSnapshot{
 		OrgQuotas:     orgQuotas,
 		ProjectQuotas: projectQuotas,
-		LastSyncedAt:  time.Now(),
+		LastSyncedAt:  timestamppb.Now(),
 	}
 
 	return r.snapshotStore.Save(ctx, snapshot)

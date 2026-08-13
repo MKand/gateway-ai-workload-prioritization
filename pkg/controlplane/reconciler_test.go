@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"cloud.google.com/go/monitoring/apiv3/v2/monitoringpb"
+	pb "github.com/MKand/gateway-ai-workload-prioritization/gen/go/governor/v1"
 	"github.com/MKand/gateway-ai-workload-prioritization/pkg/governor"
 	"google.golang.org/genproto/googleapis/api/metric"
 	"google.golang.org/genproto/googleapis/api/monitoredres"
@@ -57,19 +58,19 @@ func TestReconcile_AggregatesAndCalculates(t *testing.T) {
 		Regions:      []string{"us-central1", "us-west1"},
 		Models:       []string{"model1_flash", "model1_pro"},
 		SafetyMargin: 0.3,
-		DefaultProjectLimits: map[string]governor.ModelLimit{
-			"projecta/us-central1/model1_pro":   {MaxRPM: 100, MaxTPM: 5000},
-			"projecta/us-west1/model1_pro":      {MaxRPM: 100, MaxTPM: 5000},
-			"projecta/us-central1/model1_flash": {MaxRPM: 50, MaxTPM: 2500},
-			"projecta/us-west1/model1_flash":    {MaxRPM: 50, MaxTPM: 2500},
-			"projectb/us-central1/model1_flash": {MaxRPM: 50, MaxTPM: 2500},
-			"projectb/us-west1/model1_flash":    {MaxRPM: 50, MaxTPM: 2500},
+		DefaultProjectLimits: map[string]pb.ModelLimit{
+			"projecta/us-central1/model1_pro":   {MaxRpm: 100, MaxTpm: 5000},
+			"projecta/us-west1/model1_pro":      {MaxRpm: 100, MaxTpm: 5000},
+			"projecta/us-central1/model1_flash": {MaxRpm: 50, MaxTpm: 2500},
+			"projecta/us-west1/model1_flash":    {MaxRpm: 50, MaxTpm: 2500},
+			"projectb/us-central1/model1_flash": {MaxRpm: 50, MaxTpm: 2500},
+			"projectb/us-west1/model1_flash":    {MaxRpm: 50, MaxTpm: 2500},
 		},
-		DefaultOrgLimits: map[string]governor.ModelLimit{
-			"us-central1/model1_pro":   {MaxRPM: 500, MaxTPM: 25000},
-			"us-west1/model1_pro":      {MaxRPM: 500, MaxTPM: 25000},
-			"us-central1/model1_flash": {MaxRPM: 200, MaxTPM: 10000},
-			"us-west1/model1_flash":    {MaxRPM: 200, MaxTPM: 10000},
+		DefaultOrgLimits: map[string]pb.ModelLimit{
+			"us-central1/model1_pro":   {MaxRpm: 500, MaxTpm: 25000},
+			"us-west1/model1_pro":      {MaxRpm: 500, MaxTpm: 25000},
+			"us-central1/model1_flash": {MaxRpm: 200, MaxTpm: 10000},
+			"us-west1/model1_flash":    {MaxRpm: 200, MaxTpm: 10000},
 		},
 	}
 
@@ -101,18 +102,38 @@ func TestReconcile_AggregatesAndCalculates(t *testing.T) {
 
 	snapshot, err := store.Get(ctx)
 	if err != nil {
-		t.Fatalf("failed to get snapshot: %v", err)
+		t.Fatalf("Failed to retrieve snapshot: %v", err)
 	}
 
+	// 1. Assert Org-level quota (Aggregated usage, static config limits)
+	orgQuota, err := snapshot.GetOrgQuota("us-central1", "model1_pro")
+	if err != nil {
+		t.Errorf("Failed to find org quota: %v", err)
+	} else {
+		// Org limit is static from config
+		if orgQuota.MaxRpm != 500 || orgQuota.MaxTpm != 25000 {
+			t.Errorf("Expected org limit 500 RPM / 25000 TPM, got %d RPM / %d TPM", orgQuota.MaxRpm, orgQuota.MaxTpm)
+		}
+		// Org usage is sum of projects (100 RPM + 100 RPM = 200)
+		if orgQuota.CurrentRpm != 200 || orgQuota.CurrentTpm != 100000 {
+			t.Errorf("Expected org usage 200 RPM / 100000 TPM, got %d RPM / %d TPM", orgQuota.CurrentRpm, orgQuota.CurrentTpm)
+		}
+		// Org headroom: Usable = 500 * (1 - 0.3) = 350. Headroom = 350 - 200 = 150.
+		if orgQuota.HeadroomRpm != 150 {
+			t.Errorf("Expected org RPM headroom 150, got %d", orgQuota.HeadroomRpm)
+		}
+	}
+
+	// 2. Assert Project-level quota (Static limits, mock usage, individual math)
 	p1, err := snapshot.GetProjectQuota("projecta", "us-central1", "model1_pro")
 	if err != nil {
 		t.Errorf("Failed to find project quota: %v", err)
 	} else {
-		if p1.MaxRPM != 100 || p1.MaxTPM != 5000 {
-			t.Errorf("Expected project limit 100 RPM / 5000 TPM, got %d RPM / %d TPM", p1.MaxRPM, p1.MaxTPM)
+		if p1.MaxRpm != 100 || p1.MaxTpm != 5000 {
+			t.Errorf("Expected project limit 100 RPM / 5000 TPM, got %d RPM / %d TPM", p1.MaxRpm, p1.MaxTpm)
 		}
-		if p1.HeadroomRPM != -30 {
-			t.Errorf("Expected project RPM headroom -30, got %d", p1.HeadroomRPM)
+		if p1.HeadroomRpm != -30 {
+			t.Errorf("Expected project RPM headroom -30, got %d", p1.HeadroomRpm)
 		}
 	}
 }
@@ -123,7 +144,7 @@ type SpyStore struct {
 	mu        sync.Mutex
 }
 
-func (s *SpyStore) Save(ctx context.Context, snapshot *governor.QuotaSnapshot) error {
+func (s *SpyStore) Save(ctx context.Context, snapshot *pb.QuotaSnapshot) error {
 	s.mu.Lock()
 	s.saveCount++
 	s.mu.Unlock()
@@ -145,11 +166,11 @@ func TestReconciler_LifecycleStart(t *testing.T) {
 		Models:       []string{"model1_pro"},
 		PollInterval: 10 * time.Millisecond,
 		SafetyMargin: 0.1,
-		DefaultProjectLimits: map[string]governor.ModelLimit{
-			"projecta/us-central1/model1_pro": {MaxRPM: 100, MaxTPM: 5000},
+		DefaultProjectLimits: map[string]pb.ModelLimit{
+			"projecta/us-central1/model1_pro": {MaxRpm: 100, MaxTpm: 5000},
 		},
-		DefaultOrgLimits: map[string]governor.ModelLimit{
-			"us-central1/model1_pro": {MaxRPM: 500, MaxTPM: 25000},
+		DefaultOrgLimits: map[string]pb.ModelLimit{
+			"us-central1/model1_pro": {MaxRpm: 500, MaxTpm: 25000},
 		},
 	}
 
@@ -185,13 +206,13 @@ func TestReconcile_ZeroQuotaSafety(t *testing.T) {
 		Regions:      []string{"us-central1"},
 		Models:       []string{"model1_pro"},
 		SafetyMargin: 0.3, // 30% margin
-		DefaultProjectLimits: map[string]governor.ModelLimit{
+		DefaultProjectLimits: map[string]pb.ModelLimit{
 			// Max limit is 0
-			"projecta/us-central1/model1_pro": {MaxRPM: 0, MaxTPM: 0},
+			"projecta/us-central1/model1_pro": {MaxRpm: 0, MaxTpm: 0},
 		},
-		DefaultOrgLimits: map[string]governor.ModelLimit{
+		DefaultOrgLimits: map[string]pb.ModelLimit{
 			// Org limit is also 0
-			"us-central1/model1_pro": {MaxRPM: 0, MaxTPM: 0},
+			"us-central1/model1_pro": {MaxRpm: 0, MaxTpm: 0},
 		},
 	}
 
@@ -227,11 +248,11 @@ func TestReconcile_ZeroQuotaSafety(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to find project quota: %v", err)
 	}
-	if p.HeadroomRPM != -100 {
-		t.Errorf("Expected project RPM headroom to be -100, got %d", p.HeadroomRPM)
+	if p.HeadroomRpm != -100 {
+		t.Errorf("Expected project RPM headroom to be -100, got %d", p.HeadroomRpm)
 	}
-	if p.UtilizationRPM != 0.0 {
-		t.Errorf("Expected project RPM utilization to default to 0.0, got %f", p.UtilizationRPM)
+	if p.UtilizationRpm != 0.0 {
+		t.Errorf("Expected project RPM utilization to default to 0.0, got %f", p.UtilizationRpm)
 	}
 
 	// 5. Assert Org-level math fallbacks:
@@ -239,11 +260,11 @@ func TestReconcile_ZeroQuotaSafety(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to find org quota: %v", err)
 	}
-	if org.HeadroomRPM != -100 {
-		t.Errorf("Expected org RPM headroom to be -100, got %d", org.HeadroomRPM)
+	if org.HeadroomRpm != -100 {
+		t.Errorf("Expected org RPM headroom to be -100, got %d", org.HeadroomRpm)
 	}
-	if org.UtilizationRPM != 0.0 {
-		t.Errorf("Expected org RPM utilization to default to 0.0, got %f", org.UtilizationRPM)
+	if org.UtilizationRpm != 0.0 {
+		t.Errorf("Expected org RPM utilization to default to 0.0, got %f", org.UtilizationRpm)
 	}
 }
 
@@ -256,11 +277,11 @@ func TestReconciler_ErrorResilience(t *testing.T) {
 		Regions:      []string{"us-central1", "us-west1"},
 		Models:       []string{"model1_flash", "model1_pro"},
 		SafetyMargin: 0.3,
-		DefaultProjectLimits: map[string]governor.ModelLimit{
-			"projecta/us-central1/model1_pro": {MaxRPM: 100, MaxTPM: 5000},
+		DefaultProjectLimits: map[string]pb.ModelLimit{
+			"projecta/us-central1/model1_pro": {MaxRpm: 100, MaxTpm: 5000},
 		},
-		DefaultOrgLimits: map[string]governor.ModelLimit{
-			"us-central1/model1_pro": {MaxRPM: 500, MaxTPM: 25000},
+		DefaultOrgLimits: map[string]pb.ModelLimit{
+			"us-central1/model1_pro": {MaxRpm: 500, MaxTpm: 25000},
 		},
 	}
 

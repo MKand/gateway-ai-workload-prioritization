@@ -5,23 +5,23 @@ import (
 	"errors"
 	"sync/atomic"
 
-	"github.com/MKand/gateway-ai-workload-prioritization/pkg/governor"
+	pb "github.com/MKand/gateway-ai-workload-prioritization/gen/go/governor/v1"
 )
 
 type SnapshotStore interface {
-	Save(ctx context.Context, snapshot *governor.QuotaSnapshot) error
-	Get(ctx context.Context) (*governor.QuotaSnapshot, error)
+	Save(ctx context.Context, snapshot *pb.QuotaSnapshot) error
+	Get(ctx context.Context) (*pb.QuotaSnapshot, error)
 }
 
 type InMemoryStore struct {
-	snapshot atomic.Pointer[governor.QuotaSnapshot]
+	snapshot atomic.Pointer[pb.QuotaSnapshot]
 }
 
 func NewInMemoryStore() *InMemoryStore {
 	return &InMemoryStore{}
 }
 
-func (s *InMemoryStore) Save(ctx context.Context, snapshot *governor.QuotaSnapshot) error {
+func (s *InMemoryStore) Save(ctx context.Context, snapshot *pb.QuotaSnapshot) error {
 	if snapshot == nil {
 		return errors.New("cannot save nil snapshot")
 	}
@@ -29,7 +29,7 @@ func (s *InMemoryStore) Save(ctx context.Context, snapshot *governor.QuotaSnapsh
 	return nil
 }
 
-func (s *InMemoryStore) Get(ctx context.Context) (*governor.QuotaSnapshot, error) {
+func (s *InMemoryStore) Get(ctx context.Context) (*pb.QuotaSnapshot, error) {
 	qs := s.snapshot.Load()
 	if qs == nil {
 		return nil, errors.New("no quota snapshot available")
