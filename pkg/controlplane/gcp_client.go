@@ -25,6 +25,8 @@ const (
 	rpmMetricType                 = "aiplatform.googleapis.com/quota/generate_content_requests_per_minute_per_project_per_base_model/usage"
 	tpmMetricType                 = "aiplatform.googleapis.com/quota/generate_content_input_tokens_per_minute_per_base_model/usage"
 	MetricLookupWindowMinutes int = 5
+	FallbackMaxRPM                = 1000
+	FallbackMaxTPM                = 2000000
 )
 
 type GCPQuotaClient struct {
@@ -175,7 +177,7 @@ func (gqc *GCPQuotaClient) resolveLimit(limits map[string]governor.ModelLimit, p
 		}
 	}
 	// Fallback default if no match is found
-	return governor.ModelLimit{MaxRPM: 1000, MaxTPM: 2000000}
+	return governor.ModelLimit{MaxRPM: FallbackMaxRPM, MaxTPM: FallbackMaxTPM}
 }
 
 func extractLimits(qi *cloudquotaspb.QuotaInfo, targetRegions, targetModels []string) map[string]int64 {
