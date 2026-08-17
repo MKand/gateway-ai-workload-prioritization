@@ -4,14 +4,14 @@
 
 The **Gemini Quota Governor** is a high-performance, priority-aware traffic management and dynamic routing system for Google Cloud Platform (GCP) Vertex AI workloads.
 
-Built with **Go 1.25+**, the system strictly decouples the high-speed synchronous request path (**Data Plane**) from the asynchronous quota discovery and configuration path (**Control Plane**). Standardizing on the open-source **Envoy `ext_proc` gRPC specification** (`envoy.service.ext_proc.v3`), it runs with identical binary logic across both **Self-Hosted Envoy (via VPC Private DNS Interception)** and **Google-Managed Ingress (GCP Agent Gateway / Cloud Service Extensions)**.
+The system strictly decouples the high-speed synchronous request path (**Data Plane**) from the asynchronous quota discovery and configuration path (**Control Plane**). Standardizing on the open-source **Envoy `ext_proc` gRPC specification** (`envoy.service.ext_proc.v3`), it runs with identical binary logic across both **Self-Hosted Envoy (via VPC Private DNS Interception)** and **Google-Managed Ingress (GCP Agent Gateway / Cloud Service Extensions)**.
 
 ---
 
 ## 2. End-to-End System Architecture
 
 ```
-                                  CONTROL PLANE (Go 1.25+, Async Reconciler)
+                                  CONTROL PLANE (Async Reconciler)
                         ┌─────────────────────────────────────────────────────────────┐
                         │  Governor Control Plane Controller                          │
                         │                                                             │
@@ -23,15 +23,16 @@ Built with **Go 1.25+**, the system strictly decouples the high-speed synchronou
                                                        │ (Atomic Pointer Push)
 ═══════════════════════════════════════════════════════╪══════════════════════════════════════════════
                                                        │
-                                  DATA PLANE (Go 1.25+, Sub-Millisecond ext_proc)
+                                  DATA PLANE (Sub-Millisecond ext_proc)
                                                        │
                                   ┌────────────────────┴────────────────────┐
-                                  │   Governor ext_proc Engine (Go 1.25+)   │
+                                  │   Governor ext_proc Engine              │
                                   │   • Local In-Memory Token Buckets       │
-                                  │   • Priority Inspection (critical vs    │
-                                  │     best-effort)                        │
+                                  │   • Priority Inspection (critical,      │
+                                  │     best-effort, custom)                │
                                   │   • Fallback Cascade DAG Engine         │
-                                  │   • Immediate HTTP 429 Local Replies    │
+                                  │   • Immediate HTTP 429 Local Replies,   │
+                                  │      or request rewites to fallbacks    │
                                   └────────────────────▲────────────────────┘
                                                        │
                               gRPC envoy.service.ext_proc.v3 (Shared Interface)
@@ -45,7 +46,7 @@ Built with **Go 1.25+**, the system strictly decouples the high-speed synchronou
           └────────────────────────────────────────────┬────────────────────────────────────────────┘
                                                        │ (Forwarded Request)
                                                        ▼
-                       [ https://us-central1-aiplatform.googleapis.com:443 (Vertex AI) ]
+                       [ https://<region>-aiplatform.googleapis.com:443 (Vertex AI) ]
 ```
 
 ---
@@ -81,27 +82,18 @@ The Control Plane executes asynchronously on macro timescales (30s intervals) an
 ### 1. GCP Quota Ingestion Engine
 * **API Integration**: Integrates with GCP client libraries (`cloud.google.com/go/cloudquotas/v1` and `cloud.google.com/go/monitoring/apiv3`).
 * **Ceiling & Usage Queries**:
-  * Periodically polls effective limits from the [GCP Cloud Quotas API](https://cloud.google.com/docs/quotas/overview).
-  * Queries 1-minute rate metrics from Cloud Monitoring: `aiplatform.googleapis.com/quota/generate_content_tokens/usage`.
-* **Jittered Polling**: Uses a 30-second interval with jitter and exponential backoff to avoid consuming GCP quota management rate limits.
+  * Periodically polls effective limits from the [GCP Cloud Quotas API](https://cloud.google.com/docs/quotas/overview). (configurable)
+  * Queries 5-minute rate metrics from Cloud Monitoring for `generate_content` requests and `token` counts. (the time window is not yet configurable)
+* [Roadmap] **Jittered Polling**: Uses a 30-second interval with jitter and exponential backoff to avoid consuming GCP quota management rate limits.
 
 ### 2. Dynamic Headroom & Safety Margin Calculator
-Under Vertex AI **Dynamic Shared Quotas (DSQ 3.0)**, quota capacity is pooled and shared at the **GCP Organization** and **Billing Account** level rather than being static per-project buckets. 
+Under Vertex AI **Dynamic Shared Quotas (DSQ)**, quota capacity is pooled and shared across the GCP Organization rather than being static per-project buckets.
 
 #### A. How Org-Level Quotas are Determined
-The organization's quota tier is dynamically calculated by GCP based on the **rolling 30-day spend** across all billing accounts in the organization. Each tier defines a **Baseline Throughput** limit for "Critical" traffic (protected from fair-share throttling) in Tokens Per Minute (TPM):
+GCP dynamically sets a Dynamic Shared Quota (DSQ) for an organization. Under DSQ, capacity is pooled and shared across the organization, protecting critical traffic up to a baseline limit.
 
-> [!WARNING]
-> **Disclaimer**: The spend thresholds, tiers, and baseline throughput allocations defined below are subject to change by Google Cloud Platform in the future. The Reconciler is designed to adapt to these changes dynamically by fetching limits at runtime rather than hardcoding thresholds.
-
-
-| Model Family | Tier | Spend (30 Days) | Critical Traffic TPM (Org-Level) |
-| :--- | :--- | :--- | :--- |
-| **Pro Models** | Tier 1 <br> Tier 2 <br> Tier 3 | $10 - $250 <br> $250 - $2,000 <br> > $2,000 | 500,000 <br> 1,000,000 <br> 2,000,000 |
-| **Flash / Flash-Lite** | Tier 1 <br> Tier 2 <br> Tier 3 | $10 - $250 <br> $250 - $2,000 <br> > $2,000 | 2,000,000 <br> 4,000,000 <br> 10,000,000 |
-
-*   **Opportunistic Bursting**: Traffic exceeding the baseline is "Sheddable Plus" and subject to standard GCP `429` throttling during high congestion.
-*   **Safety Margin**: The Reconciler retains a configurable safety buffer (default `5%` or `0.05` to `0.3` for tests) to shed or fallback traffic *before* hitting these limits:
+*   **Opportunistic Bursting**: Traffic exceeding the organization's baseline limit is permitted on a best-effort basis if regional capacity allows, but is subject to standard GCP `429` throttling during times of high congestion.
+*   **Safety Margin (Quota Governor Feature)**: The Governor's Reconciler applies a configurable safety buffer (e.g., 10% safety margin) locally to proactively shed or fallback traffic *before* hitting GCP's backend limits:
     $$\text{Usable Headroom} = (\text{Effective Quota Ceiling} \times (1 - \text{SafetyMargin})) - \text{GCP Cloud Usage}$$
 
 ### 3. Declarative Policy Watcher
@@ -127,7 +119,8 @@ type QuotaSnapshot struct {
 var globalState atomic.Pointer[QuotaSnapshot]
 ```
 
-### 5. Telemetry & Metric Exporter
+### 5. [Planned] Telemetry & Metric Exporter
+*Note: Telemetry and metrics exportation is planned for a future release and is not yet implemented.*
 * Exposes a Prometheus `/metrics` endpoint on port `9090`:
   * `governor_quota_utilization_ratio{model="gemini-3.5-pro", region="us-central1"}`
   * `governor_requests_shed_total{priority="best-effort", reason="quota_exhausted"}`
@@ -201,26 +194,51 @@ To enforce Tokens-Per-Minute (TPM) ceilings without payload buffering:
 
 ---
 
-## 6. Pluggable Ingress Topologies
+## 6. Capacity Management: PayGo vs. Provisioned Throughput (PT)
 
-* **Invocation**: GCP makes an internal `ext_proc` gRPC callout to the Go Governor service running on Cloud Run or GKE. 
+### A. Dynamic Shared Quota (DSQ 3.0) Throttling Framework
+GCP manages shared Pay-As-You-Go (PayGo) capacity dynamically at the Organization/Billing Account level:
+*   **Within-Baseline Limit**: Requests sent when your organization's total consumption is within its spend-based tier baseline are prioritized and protected by GCP from shared pool contention.
+*   **Above-Baseline Limit (Bursting)**: Excess requests sent when your organization bursts past its baseline are treated as lower priority. During regional capacity shortages, the GCP gateway throttles these bursting requests first with `HTTP 429` to protect within-baseline traffic.
 
-### Topology A: Self-Hosted Envoy + VPC Private DNS
-* **Ingress**: [GCP Cloud DNS Private Zone](https://cloud.google.com/dns/docs/zones/zones-overview#private_zones) overrides `*.aiplatform.googleapis.com` to the Internal Load Balancer VIP. The proxy will be hosted as a [Envoy Proxy](https://www.envoyproxy.io/) running on Cloud Run or GKE.
+### B. Provisioned Throughput (PT)
+Provisioned Throughput offers dedicated hardware capacity reservations in Vertex AI.
+*   **Mechanism**: Customers purchase a fixed number of GenAI Scale Units (GSUs) for a specific model and region.
+*   **Request Tagging & Defaults**:
+    *   **Default routing**: Any request sent from the GCP project, region, and model configured with PT will automatically consume the reserved PT capacity without requiring any special headers.
+    *   **Bypassing PT**: To prevent lower-priority workloads from consuming your reserved capacity, you can explicitly add the header `{"X-Vertex-AI-LLM-Request-Type": "shared"}`. This routes the request to Standard PayGo instead.
+    *   **Overage Protection**: By default, traffic exceeding the purchased PT will automatically spill over to standard PayGo. You can prevent this overage charge by adding the header `{"X-Vertex-AI-LLM-Request-Type": "dedicated"}`, which rejects requests exceeding the PT limit with a `RESOURCES_EXCEEDED` error.
+*   **Cost Structure**: PT is a **flat-rate, fixed commitment** model. You are charged for the reserved GSUs hourly/monthly regardless of whether your actual throughput is high or low (you pay for the reservation even if usage is zero).
 
-### Topology B: Google-Managed Ingress (Cloud Service Extension Callout)
-* **Ingress**: Uses [Google Cloud Service Extensions](https://cloud.google.com/service-extensions/docs/overview) attached directly to an Application Load Balancer as a `Service Extension Callout`.
+### C. The Role of the Quota Governor
+The **Quota Governor** is designed to maximize the operational efficiency of an organization's allocated Vertex AI capacity (including Standard/Priority PayGo and Provisioned Throughput) based on internal workload priorities.
 
-### Topology C: Google-Managed Ingress (GCP Agent Gateway / Cloud Service Extensions)
-* **Ingress**: Uses [Google Cloud Service Extensions](https://cloud.google.com/service-extensions/docs/overview) attached directly to an Application Load Balancer or Agent Gateway as a `Service Extension WASM plugin`
+By evaluating and classifying incoming traffic priorities locally, the Governor prevents lower-priority background tasks (such as batch jobs) from exhausting shared capacity, thereby protecting high-priority, user-facing workloads from transient throttling during periods of peak contention. The Governor complements Vertex AI capacity scaling (such as purchasing additional PT or upgrading spend tiers) by providing granular, tenant-level traffic management and routing policies that align consumption with business priorities. 
+
+In its current release, the Governor supports PT routing by directing requests to the specific models and regions where PT capacity has been provisioned. Roadmap plans include native integration with PT headers to allow dynamic configuration of `shared` and `dedicated` request types based on real-time priority.
 
 ---
 
-## 7. References & External Documentation
+## 7. Pluggable Ingress Topologies
 
-* [Envoy External Processing Filter Specification](https://www.envoyproxy.io/docs/envoy/latest/configuration/http/http_filters/ext_proc_filter)
-* [Google Cloud Service Extensions Overview](https://cloud.google.com/service-extensions/docs/overview)
-* [Google Cloud DNS Private Zones](https://cloud.google.com/dns/docs/zones/zones-overview#private_zones)
-* [Google Cloud Quotas API Documentation](https://cloud.google.com/docs/quotas/overview)
-* [Vertex AI Generative AI Quotas & Limits](https://cloud.google.com/vertex-ai/generative-ai/docs/quotas)
-* [Google Cloud Private Google Access](https://cloud.google.com/vpc/docs/private-google-access)
+*   **Invocation**: GCP makes an internal `ext_proc` gRPC callout to the Go Governor service running on Cloud Run or GKE. 
+
+### Topology A: Self-Hosted Envoy + VPC Private DNS
+*   **Ingress**: [GCP Cloud DNS Private Zone](https://cloud.google.com/dns/docs/zones/zones-overview#private_zones) overrides `*.aiplatform.googleapis.com` to the Internal Load Balancer VIP. The proxy will be hosted as a [Envoy Proxy](https://www.envoyproxy.io/) running on Cloud Run or GKE.
+
+### Topology B: Google-Managed Ingress (Cloud Service Extension Callout)
+*   **Ingress**: Uses [Google Cloud Service Extensions](https://cloud.google.com/service-extensions/docs/overview) attached directly to an Application Load Balancer as a `Service Extension Callout`.
+
+### Topology C: Google-Managed Ingress (GCP Agent Gateway / Cloud Service Extensions)
+*   **Ingress**: Uses [Google Cloud Service Extensions](https://cloud.google.com/service-extensions/docs/overview) attached directly to an Application Load Balancer or Agent Gateway as a `Service Extension WASM plugin`
+
+---
+
+## 8. References & External Documentation
+
+*   [Envoy External Processing Filter Specification](https://www.envoyproxy.io/docs/envoy/latest/configuration/http/http_filters/ext_proc_filter)
+*   [Google Cloud Service Extensions Overview](https://cloud.google.com/service-extensions/docs/overview)
+*   [Google Cloud DNS Private Zones](https://cloud.google.com/dns/docs/zones/zones-overview#private_zones)
+*   [Google Cloud Quotas API Documentation](https://cloud.google.com/docs/quotas/overview)
+*   [Vertex AI Generative AI Quotas & Limits](https://cloud.google.com/vertex-ai/generative-ai/docs/quotas)
+*   [Google Cloud Private Google Access](https://cloud.google.com/vpc/docs/private-google-access)

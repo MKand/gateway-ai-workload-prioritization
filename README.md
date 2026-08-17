@@ -8,7 +8,7 @@ A priority-aware rate limiting and dynamic traffic router for Google Cloud Platf
 
 | Document | Description |
 | :--- | :--- |
-| [docs/project_overview.md](docs/project_overview.md) | **Vision & Gap Analysis**: Deep dive into quota contention, comparison with traditional gateways, and Vertex AI Dynamic Shared Quotas (DSQ 3.0). |
+| [docs/project_overview.md](docs/project_overview.md) | **Vision & Gap Analysis**: Deep dive into quota contention in enterprise fleets, tenant noisy-neighbor problems, and comparison with traditional/LLM gateways. |
 | [docs/architecture.md](docs/architecture.md) | **System Architecture**: Detailed Control Plane vs. Data Plane design, priority taxonomy, lock-free state synchronization, and pluggable ingress topologies. |
 
 ---
