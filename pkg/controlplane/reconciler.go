@@ -85,14 +85,14 @@ func (r *Reconciler) reconcile(ctx context.Context) error {
 				return err
 			}
 
-			pUsableRPM := float64(raw.MaxRpm) * (1.0 - r.config.SafetyMargin)
-			pHeadroomRPM := int64(pUsableRPM) - raw.CurrentRpm
+			pUsableRPM := (raw.MaxRpm * (100 - r.config.SafetyMarginPercent)) / 100
+			pHeadroomRPM := pUsableRPM - raw.CurrentRpm
 			var pUtilRPM float64
 			if raw.MaxRpm > 0 {
 				pUtilRPM = float64(raw.CurrentRpm) / float64(raw.MaxRpm)
 			}
 
-			pUsableTPM := float64(raw.MaxTpm) * (1.0 - r.config.SafetyMargin)
+			pUsableTPM := (raw.MaxTpm * (100 - r.config.SafetyMarginPercent)) / 100
 			pHeadroomTPM := int64(pUsableTPM) - raw.CurrentTpm
 			var pUtilTPM float64
 			if raw.MaxTpm > 0 {
@@ -129,14 +129,14 @@ func (r *Reconciler) reconcile(ctx context.Context) error {
 	// Post-Process Org-Level Quota Metrics
 	// ==========================================
 	for _, q := range orgQuotas {
-		usableRPM := float64(q.MaxRpm) * (1.0 - r.config.SafetyMargin)
-		q.HeadroomRpm = int64(usableRPM) - q.CurrentRpm
+		usableRPM := (q.MaxRpm * (100 - r.config.SafetyMarginPercent)) / 100
+		q.HeadroomRpm = usableRPM - q.CurrentRpm
 		if q.MaxRpm > 0 {
 			q.UtilizationRpm = float64(q.CurrentRpm) / float64(q.MaxRpm)
 		}
 
-		usableTPM := float64(q.MaxTpm) * (1.0 - r.config.SafetyMargin)
-		q.HeadroomTpm = int64(usableTPM) - q.CurrentTpm
+		usableTPM := (q.MaxTpm * (100 - r.config.SafetyMarginPercent)) / 100
+		q.HeadroomTpm = usableTPM - q.CurrentTpm
 		if q.MaxTpm > 0 {
 			q.UtilizationTpm = float64(q.CurrentTpm) / float64(q.MaxTpm)
 		}
