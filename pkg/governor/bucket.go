@@ -71,7 +71,7 @@ func (tb *TokenBucket) TryAcquire(tokens int64) bool {
 
 	// Check if sufficient tokens and request capacity exist
 	if tb.currentRPM >= 1 && tb.currentTPM >= reqTokens {
-		tb.currentRPM -= 1.0
+		tb.currentRPM -= 1
 		tb.currentTPM -= reqTokens
 		return true
 	}
@@ -97,7 +97,7 @@ func (tb *TokenBucket) GetAvailable() (availRPM, availTPM int64) {
 	defer tb.mu.Unlock()
 
 	tb.refillLocked(time.Now())
-	return int64(tb.currentRPM), int64(tb.currentTPM)
+	return tb.currentRPM, tb.currentTPM
 }
 
 // refillLocked recalculates token levels based on elapsed time since last refill.
@@ -117,7 +117,7 @@ func (tb *TokenBucket) refillLocked(now time.Time) {
 	}
 
 	elapsedRPM := now.Sub(tb.lastRefillRPM)
-	if elapsedRPM > 0 && tb.maxTPM > 0 {
+	if elapsedRPM > 0 && tb.maxRPM > 0 {
 		nanosPerRequest := int64(60*time.Second) / tb.maxRPM
 		if nanosPerRequest > 0 {
 			newRequests := elapsedRPM.Nanoseconds() / nanosPerRequest
@@ -134,7 +134,7 @@ func (tb *TokenBucket) SyncHeadroom(headroomRPM, headroomTPM int64) {
 	defer tb.mu.Unlock()
 	now := time.Now()
 
-	tb.refillLocked(time.Now())
+	tb.refillLocked(now)
 	if headroomRPM <= 0 {
 		tb.currentRPM = 0
 	} else {
