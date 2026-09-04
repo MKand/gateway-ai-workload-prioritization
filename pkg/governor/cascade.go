@@ -1,6 +1,7 @@
 package governor
 
 import (
+	"errors"
 	"fmt"
 	"strings"
 
@@ -8,152 +9,138 @@ import (
 	"google.golang.org/protobuf/types/known/durationpb"
 )
 
-// DefaultModelCascades maps standard model families to their downstream fallback candidates.
-var DefaultModelCascades = map[string][]string{
-	"gemini-1.5-pro":      {"gemini-1.5-flash", "gemini-1.5-flash-8b", "gemini-1.0-pro"},
-	"gemini-2.0-flash":    {"gemini-1.5-flash", "gemini-1.5-flash-8b"},
-	"gemini-1.5-flash":    {"gemini-1.5-flash-8b"},
-	"gemini-1.5-flash-8b": {},
-}
-
-// DefaultRegionCascades maps regions to geographically proximate fallback regions.
-var DefaultRegionCascades = map[string][]string{
-	"us-central1":     {"us-east4", "us-west1", "us-east1"},
-	"us-east4":        {"us-central1", "us-east1", "us-west1"},
-	"us-west1":        {"us-central1", "us-east4", "us-west4"},
-	"europe-west4":    {"europe-west1", "europe-west3", "us-central1"},
-	"asia-northeast1": {"asia-southeast1", "asia-east1", "us-central1"},
-}
-
 // CascadeEngine manages model downgrade and regional failover evaluation.
 type CascadeEngine struct {
-	modelCascades  map[string][]string
-	regionCascades map[string][]string
+	customPolicies map[string]CustomPolicy
 }
 
 // NewCascadeEngine creates a CascadeEngine with default and optional custom cascade chains.
-func NewCascadeEngine(customModelCascades map[string][]string, customRegionCascades map[string][]string) *CascadeEngine {
-	models := make(map[string][]string)
-	for k, v := range DefaultModelCascades {
-		models[strings.ToLower(k)] = v
-	}
-	for k, v := range customModelCascades {
-		models[strings.ToLower(k)] = v
-	}
+func NewCascadeEngine(customPolicies map[string]CustomPolicy) (*CascadeEngine, error) {
+	normPolicies := make(map[string]CustomPolicy)
 
-	regions := make(map[string][]string)
-	for k, v := range DefaultRegionCascades {
-		regions[strings.ToLower(k)] = v
-	}
-	for k, v := range customRegionCascades {
-		regions[strings.ToLower(k)] = v
-	}
+	for name, policy := range customPolicies {
+		normName := strings.ToLower(strings.TrimSpace(name))
+		if normName == "" {
+			return nil, errors.New("policy name cannot be empty")
+		}
+		if len(policy.Cascade) == 0 {
+			return nil, fmt.Errorf("policy %q must define at least one cascade step", name)
+		}
 
+		normCascade := make([]CascadeStep, 0, len(policy.Cascade))
+
+		for _, p := range policy.Cascade {
+			normTargetModel := strings.TrimSpace(p.TargetModel)
+
+			if normTargetModel == "" {
+				return nil, errors.New("TargetModel in CascadeStep cannot be empty")
+			}
+			normTargetRegion := strings.TrimSpace(p.TargetRegion)
+
+			if normTargetRegion == "" {
+				return nil, errors.New("TargetRegion in CascadeStep cannot be empty")
+			}
+			normCascade = append(normCascade, CascadeStep{
+				TargetModel:  normTargetModel,
+				TargetRegion: normTargetRegion,
+			})
+		}
+		normPolicies[normName] = CustomPolicy{
+			Cascade: normCascade,
+		}
+
+	}
 	return &CascadeEngine{
-		modelCascades:  models,
-		regionCascades: regions,
-	}
+		customPolicies: normPolicies,
+	}, nil
 }
 
 // Evaluate evaluates whether the requested model/region can serve the request or if a fallback is required.
-func (ce *CascadeEngine) Evaluate(snapshot *pb.QuotaSnapshot, project, region, model string, priority pb.Priority) pb.Decision {
+func (ce *CascadeEngine) Evaluate(snapshot *pb.QuotaSnapshot, project, region, model string, priority pb.Priority, policyName string) pb.Decision {
 	primaryQuota := getEffectiveQuota(snapshot, project, region, model)
-
-	// If primary target is healthy and not saturated, forward normally
-	if !IsSaturated(primaryQuota) {
-		return EvaluatePriority(priority, primaryQuota, DefaultShedThresholdBestEffort)
-	}
-
-	// Best-effort traffic is never permitted to cascade down to lighter models
-	if priority == pb.Priority_PRIORITY_BEST_EFFORT || priority == pb.Priority_PRIORITY_UNSPECIFIED {
+	if primaryQuota == nil {
 		return pb.Decision{
-			Drop:       true,
-			Reason:     fmt.Sprintf("primary model %s is saturated (%s); best_effort does not cascade", model, formatUtilization(primaryQuota)),
-			RetryAfter: durationpb.New(DefaultRetryAfter),
+			Drop:   false,
+			Reason: "primary quota data unavailable, admitting optimistically",
 		}
 	}
 
-	// CRITICAL & CUSTOM TRAFFIC: Traverse fallback cascade DAG
-	// Phase 1: Try fallback models in the SAME region
-	candidateModels := ce.getModelCandidates(model)
-	for _, candModel := range candidateModels {
-		candQuota := getEffectiveQuota(snapshot, project, region, candModel)
-		if isCandidateEligible(candQuota) {
-			return pb.Decision{
-				Drop:         false,
-				ReplaceModel: candModel,
-				Reason: fmt.Sprintf(
-					"model fallback: primary %s saturated in %s -> downgraded to %s",
-					model, region, candModel,
-				),
-			}
+	normPolicyName := strings.ToLower(strings.TrimSpace(policyName))
+	isPrimarySaturated := IsSaturated(primaryQuota)
+
+	// 1. CRITICAL: Pass-through (never mutate or drop)
+	if priority == pb.Priority_PRIORITY_CRITICAL {
+		reason := "priority traffic is not modified. The target status is NOT saturated"
+		if isPrimarySaturated {
+			reason = "priority traffic is not modified. WARNING: The target status is near saturated"
+		}
+		return pb.Decision{
+			Drop:   false,
+			Reason: reason,
 		}
 	}
 
-	// Phase 2: Try fallback REGIONS for the requested model (and then fallback models)
-	candidateRegions := ce.getRegionCandidates(region)
-	for _, candRegion := range candidateRegions {
-		// 2a: Try original model in secondary region
-		candQuota := getEffectiveQuota(snapshot, project, candRegion, model)
-		if isCandidateEligible(candQuota) {
+	// 2. BEST_EFFORT: Shed if saturated or above threshold; never cascades
+	if priority == pb.Priority_PRIORITY_BEST_EFFORT || priority == pb.Priority_PRIORITY_UNSPECIFIED {
+		isBestEffortShed := primaryQuota.UtilizationRpm >= DefaultShedThresholdBestEffort || primaryQuota.UtilizationTpm >= DefaultShedThresholdBestEffort
+
+		if isPrimarySaturated || isBestEffortShed {
 			return pb.Decision{
-				Drop:          false,
-				ReplaceRegion: candRegion,
-				Reason: fmt.Sprintf(
-					"regional failover: %s saturated in %s -> rerouted to %s",
-					model, region, candRegion,
-				),
+				Drop:       true,
+				Reason:     fmt.Sprintf("primary model %s is saturated/exceeded threshold (%s); best_effort does not cascade", model, formatUtilization(primaryQuota)),
+				RetryAfter: durationpb.New(DefaultRetryAfter),
+			}
+		}
+		return pb.Decision{
+			Drop:   false,
+			Reason: "best_effort admitted within threshold",
+		}
+	}
+
+	// 3. CUSTOM: Traverses explicit fallback steps if primary is saturated
+	if priority == pb.Priority_PRIORITY_CUSTOM {
+		if !isPrimarySaturated {
+			return pb.Decision{
+				Drop:   false,
+				Reason: fmt.Sprintf("custom traffic: primary %s in %s healthy, admitted", model, region),
 			}
 		}
 
-		// 2b: Try fallback models in secondary region
-		for _, candModel := range candidateModels {
-			candModelQuota := getEffectiveQuota(snapshot, project, candRegion, candModel)
-			if isCandidateEligible(candModelQuota) {
+		policy, exists := ce.customPolicies[normPolicyName]
+		if !exists || len(policy.Cascade) == 0 {
+			return pb.Decision{
+				Drop:       true,
+				Reason:     fmt.Sprintf("ERROR: given policy name %s does not exist or has empty cascade; primary model %s is saturated (%s); Treating as best_effort does not cascade", normPolicyName, model, formatUtilization(primaryQuota)),
+				RetryAfter: durationpb.New(DefaultRetryAfter),
+			}
+		}
+
+		for _, cs := range policy.Cascade {
+			quota := getEffectiveQuota(snapshot, project, cs.TargetRegion, cs.TargetModel)
+			if quota != nil && !IsSaturated(quota) {
 				return pb.Decision{
 					Drop:          false,
-					ReplaceModel:  candModel,
-					ReplaceRegion: candRegion,
+					ReplaceModel:  cs.TargetModel,
+					ReplaceRegion: cs.TargetRegion,
 					Reason: fmt.Sprintf(
 						"combined failover: %s in %s saturated -> rerouted to %s in %s",
-						model, region, candModel, candRegion,
+						model, region, cs.TargetModel, cs.TargetRegion,
 					),
 				}
 			}
 		}
+
+		return pb.Decision{
+			Drop:       true,
+			Reason:     fmt.Sprintf("Primary target and cascade targets defined in policy %s are all saturated; Dropping traffic", normPolicyName),
+			RetryAfter: durationpb.New(DefaultRetryAfter),
+		}
 	}
 
-	// Phase 3: All fallback candidates exhausted -> drop as last resort
 	return pb.Decision{
-		Drop: true,
-		Reason: fmt.Sprintf(
-			"critical drop: all fallback models (%v) and regions (%v) exhausted",
-			candidateModels, candidateRegions,
-		),
-		RetryAfter: durationpb.New(DefaultRetryAfter),
+		Drop:   false,
+		Reason: "primary is healthy, traffic is being forwarded as expected",
 	}
-}
-
-// isCandidateEligible returns true only if the candidate has an existing quota entry with available capacity.
-func isCandidateEligible(quota *pb.ModelQuota) bool {
-	if quota == nil {
-		return false
-	}
-	return !IsSaturated(quota)
-}
-
-func (ce *CascadeEngine) getModelCandidates(model string) []string {
-	if candidates, ok := ce.modelCascades[strings.ToLower(model)]; ok {
-		return candidates
-	}
-	return nil
-}
-
-func (ce *CascadeEngine) getRegionCandidates(region string) []string {
-	if candidates, ok := ce.regionCascades[strings.ToLower(region)]; ok {
-		return candidates
-	}
-	return nil
 }
 
 // getEffectiveQuota returns the project-level quota if present, otherwise falls back to org-level quota.

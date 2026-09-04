@@ -21,4 +21,14 @@ type Config struct {
 	ShedThresholdBestEffort float64                  `json:"shedThresholdBestEffort" yaml:"shed_threshold_best_effort"`
 	DefaultProjectLimits    map[string]pb.ModelLimit `json:"defaultProjectLimits" yaml:"default_project_limits"`
 	DefaultOrgLimits        map[string]pb.ModelLimit `json:"defaultOrgLimits" yaml:"default_org_limits"`
+	CustomPolicies          map[string]CustomPolicy  `json:"customPolicies,omitempty" yaml:"custom_policies,omitempty"`
+}
+
+type CascadeStep struct {
+	TargetModel  string `json:"targetModel,omitempty" yaml:"target_model,omitempty"`
+	TargetRegion string `json:"targetRegion,omitempty" yaml:"region,omitempty"`
+}
+
+type CustomPolicy struct {
+	Cascade []CascadeStep `json:"cascade" yaml:"cascade"`
 }
