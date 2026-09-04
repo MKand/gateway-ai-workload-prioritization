@@ -1,7 +1,6 @@
 package governor
 
 import (
-	"math"
 	"sync"
 	"time"
 )
@@ -11,24 +10,29 @@ import (
 type TokenBucket struct {
 	mu sync.Mutex
 
-	maxRPM float64
-	maxTPM float64
+	maxRPM int64
+	maxTPM int64
 
-	currentRPM float64
-	currentTPM float64
+	currentRPM int64
+	currentTPM int64
 
-	lastRefill time.Time
+	// Adding seperate clocks because we want to advance clcoks only by the amount of token/request we gain and not elapsed time.
+	// As RPM and TPM are different, they advance at different rates.
+	// This implemnetation prevents the faster rate from stealing quota from the slower rate.
+	lastRefillRPM time.Time
+	lastRefillTPM time.Time
 }
 
 // NewTokenBucket creates a new dual-counter TokenBucket initialized to full capacity.
 func NewTokenBucket(maxRPM, maxTPM int64) *TokenBucket {
 	now := time.Now()
 	return &TokenBucket{
-		maxRPM:     float64(maxRPM),
-		maxTPM:     float64(maxTPM),
-		currentRPM: float64(maxRPM),
-		currentTPM: float64(maxTPM),
-		lastRefill: now,
+		maxRPM:        maxRPM,
+		maxTPM:        maxTPM,
+		currentRPM:    maxRPM,
+		currentTPM:    maxTPM,
+		lastRefillRPM: now,
+		lastRefillTPM: now,
 	}
 }
 
@@ -39,8 +43,8 @@ func (tb *TokenBucket) SetCapacity(maxRPM, maxTPM int64) {
 
 	tb.refillLocked(time.Now())
 
-	tb.maxRPM = float64(maxRPM)
-	tb.maxTPM = float64(maxTPM)
+	tb.maxRPM = maxRPM
+	tb.maxTPM = maxTPM
 
 	// Clamp available tokens to new capacities
 	if tb.currentRPM > tb.maxRPM {
@@ -60,13 +64,13 @@ func (tb *TokenBucket) TryAcquire(tokens int64) bool {
 	now := time.Now()
 	tb.refillLocked(now)
 
-	reqTokens := float64(tokens)
+	reqTokens := tokens
 	if reqTokens < 0 {
 		reqTokens = 0
 	}
 
 	// Check if sufficient tokens and request capacity exist
-	if tb.currentRPM >= 1.0 && tb.currentTPM >= reqTokens {
+	if tb.currentRPM >= 1 && tb.currentTPM >= reqTokens {
 		tb.currentRPM -= 1.0
 		tb.currentTPM -= reqTokens
 		return true
@@ -84,7 +88,7 @@ func (tb *TokenBucket) Refund(tokens int64) {
 	tb.mu.Lock()
 	defer tb.mu.Unlock()
 
-	tb.currentTPM = math.Min(tb.maxTPM, tb.currentTPM+float64(tokens))
+	tb.currentTPM = min(tb.maxTPM, tb.currentTPM+tokens)
 }
 
 // GetAvailable returns the currently available RPM and TPM tokens.
@@ -99,16 +103,49 @@ func (tb *TokenBucket) GetAvailable() (availRPM, availTPM int64) {
 // refillLocked recalculates token levels based on elapsed time since last refill.
 // Caller must hold tb.mu.
 func (tb *TokenBucket) refillLocked(now time.Time) {
-	elapsed := now.Sub(tb.lastRefill).Seconds()
-	if elapsed <= 0 {
-		return
+	elapsedTPM := now.Sub(tb.lastRefillTPM)
+	if elapsedTPM > 0 && tb.maxTPM > 0 {
+		nanosPerToken := int64(60*time.Second) / tb.maxTPM // how many nanoseconds to get 1 token
+		if nanosPerToken > 0 {
+			newTokens := elapsedTPM.Nanoseconds() / nanosPerToken
+			if newTokens > 0 {
+				tb.currentTPM = min(tb.maxTPM, tb.currentTPM+newTokens)
+				tb.lastRefillTPM = tb.lastRefillTPM.Add(time.Duration(newTokens * nanosPerToken)) // to ensure you are not losing any time, for example when number of tokens attained is rounded down.
+				// Eg: elapsed time is 25ms, tokens = 25/10 = 2 tokens, these 2 tokens only cost 20ms (not 25). if lastRefill is 25, we lose 5ms of progress due to rounding down.
+			}
+		}
 	}
 
-	// Replenish rate per second (capacity / 60 seconds)
-	refillRPM := (tb.maxRPM / 60.0) * elapsed
-	refillTPM := (tb.maxTPM / 60.0) * elapsed
+	elapsedRPM := now.Sub(tb.lastRefillRPM)
+	if elapsedRPM > 0 && tb.maxTPM > 0 {
+		nanosPerRequest := int64(60*time.Second) / tb.maxRPM
+		if nanosPerRequest > 0 {
+			newRequests := elapsedRPM.Nanoseconds() / nanosPerRequest
+			if newRequests > 0 {
+				tb.currentRPM = min(tb.maxRPM, tb.currentRPM+newRequests)
+				tb.lastRefillRPM = tb.lastRefillRPM.Add(time.Duration(newRequests * nanosPerRequest))
+			}
+		}
+	}
+}
 
-	tb.currentRPM = math.Min(tb.maxRPM, tb.currentRPM+refillRPM)
-	tb.currentTPM = math.Min(tb.maxTPM, tb.currentTPM+refillTPM)
-	tb.lastRefill = now
+func (tb *TokenBucket) SyncHeadroom(headroomRPM, headroomTPM int64) {
+	tb.mu.Lock()
+	defer tb.mu.Unlock()
+	now := time.Now()
+
+	tb.refillLocked(time.Now())
+	if headroomRPM <= 0 {
+		tb.currentRPM = 0
+	} else {
+		tb.currentRPM = min(tb.currentRPM, headroomRPM)
+	}
+	if headroomTPM <= 0 {
+		tb.currentTPM = 0
+	} else {
+		tb.currentTPM = min(tb.currentTPM, headroomTPM)
+	}
+	// Reset the clock to now so we refill from this new snapshot baseline
+	tb.lastRefillRPM = now
+	tb.lastRefillTPM = now
 }

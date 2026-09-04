@@ -277,4 +277,96 @@ func TestCascadeEngine_Evaluate(t *testing.T) {
 			t.Errorf("expected drop when all cascade steps are exhausted")
 		}
 	})
+
+	t.Run("custom traffic cascades past nil candidate quota to healthy target", func(t *testing.T) {
+		snapshot := &pb.QuotaSnapshot{
+			ProjectQuotas: map[string]*pb.ModelQuota{
+				// Primary is saturated
+				"my-proj/us-central1/gemini-2.5-pro": {
+					Model:          "gemini-2.5-pro",
+					Region:         "us-central1",
+					MaxRpm:         1000,
+					HeadroomRpm:    10,
+					UtilizationRpm: 0.98,
+				},
+				// Step 0 ("my-proj/us-east4/gemini-2.5-pro") is OMITTED (nil in snapshot)
+				// Step 1 ("my-proj/us-central1/gemini-2.5-flash") is healthy
+				"my-proj/us-central1/gemini-2.5-flash": {
+					Model:          "gemini-2.5-flash",
+					Region:         "us-central1",
+					MaxRpm:         2000,
+					HeadroomRpm:    1500,
+					UtilizationRpm: 0.25,
+				},
+			},
+		}
+
+		dec := engine.Evaluate(snapshot, "my-proj", "us-central1", "gemini-2.5-pro", pb.Priority_PRIORITY_CUSTOM, "quality_first")
+		if dec.IsDrop() {
+			t.Errorf("expected cascade to skip nil candidate and succeed, got drop: %s", dec.Reason)
+		}
+		if dec.ReplaceModel != "gemini-2.5-flash" || dec.ReplaceRegion != "us-central1" {
+			t.Errorf("expected fallback to gemini-2.5-flash in us-central1, got model=%q region=%q", dec.ReplaceModel, dec.ReplaceRegion)
+		}
+	})
+
+	t.Run("primary evaluated against org quota when project quota is absent", func(t *testing.T) {
+		snapshot := &pb.QuotaSnapshot{
+			OrgQuotas: map[string]*pb.ModelQuota{
+				"us-central1/gemini-2.5-pro": {
+					Model:          "gemini-2.5-pro",
+					Region:         "us-central1",
+					MaxRpm:         5000,
+					HeadroomRpm:    3000,
+					UtilizationRpm: 0.40,
+				},
+			},
+		}
+
+		dec := engine.Evaluate(snapshot, "unknown-proj", "us-central1", "gemini-2.5-pro", pb.Priority_PRIORITY_BEST_EFFORT, "")
+		if dec.IsDrop() {
+			t.Errorf("expected admission via org quota fallback, got drop: %s", dec.Reason)
+		}
+	})
+
+	t.Run("best-effort traffic shed when TPM exceeds 70% even if RPM is low", func(t *testing.T) {
+		snapshot := &pb.QuotaSnapshot{
+			ProjectQuotas: map[string]*pb.ModelQuota{
+				"my-proj/us-central1/gemini-2.5-pro": {
+					Model:          "gemini-2.5-pro",
+					Region:         "us-central1",
+					MaxRpm:         1000,
+					HeadroomRpm:    700,
+					UtilizationRpm: 0.30,
+					MaxTpm:         1000000,
+					HeadroomTpm:    200000,
+					UtilizationTpm: 0.80,
+				},
+			},
+		}
+
+		dec := engine.Evaluate(snapshot, "my-proj", "us-central1", "gemini-2.5-pro", pb.Priority_PRIORITY_BEST_EFFORT, "")
+		if !dec.IsDrop() {
+			t.Errorf("expected best-effort to be shed when TPM exceeds 70%%")
+		}
+	})
+
+	t.Run("priority unspecified defaults to best-effort shedding rules", func(t *testing.T) {
+		snapshot := &pb.QuotaSnapshot{
+			ProjectQuotas: map[string]*pb.ModelQuota{
+				"my-proj/us-central1/gemini-2.5-pro": {
+					Model:          "gemini-2.5-pro",
+					Region:         "us-central1",
+					MaxRpm:         1000,
+					HeadroomRpm:    250,
+					UtilizationRpm: 0.75,
+				},
+			},
+		}
+
+		dec := engine.Evaluate(snapshot, "my-proj", "us-central1", "gemini-2.5-pro", pb.Priority_PRIORITY_UNSPECIFIED, "")
+		if !dec.IsDrop() {
+			t.Errorf("expected unspecified priority to be shed when exceeding 70%%")
+		}
+	})
 }
