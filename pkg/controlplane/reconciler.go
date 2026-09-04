@@ -85,33 +85,17 @@ func (r *Reconciler) reconcile(ctx context.Context) error {
 				return err
 			}
 
-			pUsableRPM := (raw.MaxRpm * (100 - r.config.SafetyMarginPercent)) / 100
-			pHeadroomRPM := pUsableRPM - raw.CurrentRpm
-			var pUtilRPM float64
-			if raw.MaxRpm > 0 {
-				pUtilRPM = float64(raw.CurrentRpm) / float64(raw.MaxRpm)
+			q := &pb.ModelQuota{
+				ProjectId:  raw.ProjectId,
+				Model:      raw.Model,
+				Region:     raw.Region,
+				MaxRpm:     raw.MaxRpm,
+				MaxTpm:     raw.MaxTpm,
+				CurrentRpm: raw.CurrentRpm,
+				CurrentTpm: raw.CurrentTpm,
 			}
-
-			pUsableTPM := (raw.MaxTpm * (100 - r.config.SafetyMarginPercent)) / 100
-			pHeadroomTPM := int64(pUsableTPM) - raw.CurrentTpm
-			var pUtilTPM float64
-			if raw.MaxTpm > 0 {
-				pUtilTPM = float64(raw.CurrentTpm) / float64(raw.MaxTpm)
-			}
-
-			projectQuotas[pKey] = &pb.ModelQuota{
-				ProjectId:      raw.ProjectId,
-				Model:          raw.Model,
-				Region:         raw.Region,
-				MaxRpm:         raw.MaxRpm,
-				MaxTpm:         raw.MaxTpm,
-				CurrentRpm:     raw.CurrentRpm,
-				CurrentTpm:     raw.CurrentTpm,
-				HeadroomRpm:    pHeadroomRPM,
-				HeadroomTpm:    pHeadroomTPM,
-				UtilizationRpm: pUtilRPM,
-				UtilizationTpm: pUtilTPM,
-			}
+			populateQuotaMetrics(q, r.config.SafetyMarginPercent)
+			projectQuotas[pKey] = q
 
 			orgKey := fmt.Sprintf("%s/%s", strings.ToLower(raw.Region), strings.ToLower(raw.Model))
 			if _, exists := orgQuotas[orgKey]; !exists {
@@ -129,17 +113,7 @@ func (r *Reconciler) reconcile(ctx context.Context) error {
 	// Post-Process Org-Level Quota Metrics
 	// ==========================================
 	for _, q := range orgQuotas {
-		usableRPM := (q.MaxRpm * (100 - r.config.SafetyMarginPercent)) / 100
-		q.HeadroomRpm = usableRPM - q.CurrentRpm
-		if q.MaxRpm > 0 {
-			q.UtilizationRpm = float64(q.CurrentRpm) / float64(q.MaxRpm)
-		}
-
-		usableTPM := (q.MaxTpm * (100 - r.config.SafetyMarginPercent)) / 100
-		q.HeadroomTpm = usableTPM - q.CurrentTpm
-		if q.MaxTpm > 0 {
-			q.UtilizationTpm = float64(q.CurrentTpm) / float64(q.MaxTpm)
-		}
+		populateQuotaMetrics(q, r.config.SafetyMarginPercent)
 	}
 
 	snapshot := &pb.QuotaSnapshot{
@@ -149,4 +123,20 @@ func (r *Reconciler) reconcile(ctx context.Context) error {
 	}
 
 	return r.snapshotStore.Save(ctx, snapshot)
+}
+
+// computeHeadroomMetric calculates usable headroom and utilization ratio for a quota counter.
+func computeHeadroomMetric(max, current, safetyMarginPercent int64) (headroom int64, utilization float64) {
+	usable := (max * (100 - safetyMarginPercent)) / 100
+	headroom = usable - current
+	if max > 0 {
+		utilization = float64(current) / float64(max)
+	}
+	return headroom, utilization
+}
+
+// populateQuotaMetrics populates Headroom and Utilization for both RPM and TPM on a ModelQuota.
+func populateQuotaMetrics(q *pb.ModelQuota, safetyMarginPercent int64) {
+	q.HeadroomRpm, q.UtilizationRpm = computeHeadroomMetric(q.MaxRpm, q.CurrentRpm, safetyMarginPercent)
+	q.HeadroomTpm, q.UtilizationTpm = computeHeadroomMetric(q.MaxTpm, q.CurrentTpm, safetyMarginPercent)
 }
