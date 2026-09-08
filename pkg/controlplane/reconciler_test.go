@@ -58,7 +58,7 @@ func TestReconcile_AggregatesAndCalculates(t *testing.T) {
 		Regions:             []string{"us-central1", "us-west1"},
 		Models:              []string{"model1_flash", "model1_pro"},
 		SafetyMarginPercent: 30,
-		DefaultProjectLimits: map[string]pb.ModelLimit{
+		DefaultProjectLimits: map[string]*pb.ModelLimit{
 			"projecta/us-central1/model1_pro":   {MaxRpm: 100, MaxTpm: 5000},
 			"projecta/us-west1/model1_pro":      {MaxRpm: 100, MaxTpm: 5000},
 			"projecta/us-central1/model1_flash": {MaxRpm: 50, MaxTpm: 2500},
@@ -66,7 +66,7 @@ func TestReconcile_AggregatesAndCalculates(t *testing.T) {
 			"projectb/us-central1/model1_flash": {MaxRpm: 50, MaxTpm: 2500},
 			"projectb/us-west1/model1_flash":    {MaxRpm: 50, MaxTpm: 2500},
 		},
-		DefaultOrgLimits: map[string]pb.ModelLimit{
+		DefaultOrgLimits: map[string]*pb.ModelLimit{
 			"us-central1/model1_pro":   {MaxRpm: 500, MaxTpm: 25000},
 			"us-west1/model1_pro":      {MaxRpm: 500, MaxTpm: 25000},
 			"us-central1/model1_flash": {MaxRpm: 200, MaxTpm: 10000},
@@ -166,10 +166,10 @@ func TestReconciler_LifecycleStart(t *testing.T) {
 		Models:              []string{"model1_pro"},
 		PollInterval:        10 * time.Millisecond,
 		SafetyMarginPercent: 10,
-		DefaultProjectLimits: map[string]pb.ModelLimit{
+		DefaultProjectLimits: map[string]*pb.ModelLimit{
 			"projecta/us-central1/model1_pro": {MaxRpm: 100, MaxTpm: 5000},
 		},
-		DefaultOrgLimits: map[string]pb.ModelLimit{
+		DefaultOrgLimits: map[string]*pb.ModelLimit{
 			"us-central1/model1_pro": {MaxRpm: 500, MaxTpm: 25000},
 		},
 	}
@@ -206,11 +206,11 @@ func TestReconcile_ZeroQuotaSafety(t *testing.T) {
 		Regions:             []string{"us-central1"},
 		Models:              []string{"model1_pro"},
 		SafetyMarginPercent: 30, // 30% margin
-		DefaultProjectLimits: map[string]pb.ModelLimit{
+		DefaultProjectLimits: map[string]*pb.ModelLimit{
 			// Max limit is 0
 			"projecta/us-central1/model1_pro": {MaxRpm: 0, MaxTpm: 0},
 		},
-		DefaultOrgLimits: map[string]pb.ModelLimit{
+		DefaultOrgLimits: map[string]*pb.ModelLimit{
 			// Org limit is also 0
 			"us-central1/model1_pro": {MaxRpm: 0, MaxTpm: 0},
 		},
@@ -277,10 +277,10 @@ func TestReconciler_ErrorResilience(t *testing.T) {
 		Regions:             []string{"us-central1", "us-west1"},
 		Models:              []string{"model1_flash", "model1_pro"},
 		SafetyMarginPercent: 30,
-		DefaultProjectLimits: map[string]pb.ModelLimit{
+		DefaultProjectLimits: map[string]*pb.ModelLimit{
 			"projecta/us-central1/model1_pro": {MaxRpm: 100, MaxTpm: 5000},
 		},
-		DefaultOrgLimits: map[string]pb.ModelLimit{
+		DefaultOrgLimits: map[string]*pb.ModelLimit{
 			"us-central1/model1_pro": {MaxRpm: 500, MaxTpm: 25000},
 		},
 	}
@@ -294,15 +294,31 @@ func TestReconciler_ErrorResilience(t *testing.T) {
 	mockQuota := client.quotaClient.(*MockQuotaRequestClient)
 	mockQuota.Err = errors.New("temporary gcp timeout")
 
+	// Quota API failure should gracefully fall back to default limits without failing reconcile
 	err = reconciler.reconcile(ctx)
-	if err == nil {
-		t.Error("Expected reconcile to fail during client outage, but it succeeded")
+	if err != nil {
+		t.Fatalf("Expected reconcile to succeed via fallback defaults during quota API outage, but got: %v", err)
 	}
 
-	// Verify no snapshot was saved (store should return error because it's empty)
-	_, err = store.Get(ctx)
+	// Verify a snapshot was saved and populated with fallback limits
+	snap, err := store.Get(ctx)
+	if err != nil {
+		t.Fatalf("Expected snapshot to be saved in store, got error: %v", err)
+	}
+	q, ok := snap.ProjectQuotas["projecta/us-central1/model1_pro"]
+	if !ok {
+		t.Fatal("Expected quota entry for projecta/us-central1/model1_pro in snapshot")
+	}
+	if q.MaxRpm != 100 || q.HeadroomRpm != 70 {
+		t.Errorf("Expected fallback limits (MaxRpm=100, HeadroomRpm=70), got MaxRpm=%d, HeadroomRpm=%d", q.MaxRpm, q.HeadroomRpm)
+	}
+
+	// Hard outage: Monitoring failure should fail reconcile
+	mockMonitoring := client.monitoringClient.(*MockUsageRequestClient)
+	mockMonitoring.Err = errors.New("monitoring API down")
+	err = reconciler.reconcile(ctx)
 	if err == nil {
-		t.Error("Expected store to be empty during outage, but found a snapshot")
+		t.Error("Expected reconcile to fail during monitoring API outage, but it succeeded")
 	}
 }
 

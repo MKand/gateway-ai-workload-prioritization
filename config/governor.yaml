@@ -1,0 +1,47 @@
+# config/governor.yaml
+
+# Leave project_ids empty to test host autodetection, or list explicit projects:
+project_ids: []
+
+regions:
+  - "us-central1"
+  - "europe-west1"
+
+models:
+  - "gemini-3.5-flash"
+
+# Reconciliation timing
+poll_interval: 30s
+poll_timeout: 10s
+
+# Quota safety buffers
+safety_margin: 10              # 10% safety buffer (integer percentage)
+shed_threshold_best_effort: 0.70 # Shed batch/offline traffic above 70% utilization
+
+# Baseline limits used as fallbacks if GCP Quotas API returns empty
+default_org_limits:
+  "us-central1/gemini-3.5-flash":
+    max_rpm: 360
+    max_tpm: 4000000
+  "europe-west1/gemini-3.5-flash":
+    max_rpm: 360
+    max_tpm: 4000000
+
+# Custom fallback cascade policies (requires both target_model and region)
+custom_policies:
+  quality_first-us:
+    cascade:
+      - target_model: "gemini-3.5-flash"
+        region: "us-central1"
+      - target_model: "gemini-3.5-flash"
+        region: "us-east1"
+      - target_model: "gemini-3.5-flash"
+        region: "us-west1"
+  quality_first-eu:
+    cascade:
+      - target_model: "gemini-3.5-flash"
+        region: "europe-west1"
+      - target_model: "gemini-3.5-flash"
+        region: "europe-west3"
+      - target_model: "gemini-3.5-flash"
+        region: "europe-west4"

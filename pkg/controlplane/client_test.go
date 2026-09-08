@@ -102,15 +102,15 @@ func TestGCPQuotaClient_ResolveLimit(t *testing.T) {
 	gqc := &GCPClient{}
 	tests := []struct {
 		name    string
-		limits  map[string]pb.ModelLimit
+		limits  map[string]*pb.ModelLimit
 		project string
 		region  string
 		model   string
-		want    pb.ModelLimit
+		want    *pb.ModelLimit
 	}{
 		{
 			name: "exact_match_project_region_model",
-			limits: map[string]pb.ModelLimit{
+			limits: map[string]*pb.ModelLimit{
 				"projecta/us-central1/modela": {
 					MaxRpm: 100,
 					MaxTpm: 10000,
@@ -123,7 +123,7 @@ func TestGCPQuotaClient_ResolveLimit(t *testing.T) {
 			project: "projecta",
 			region:  "us-central1",
 			model:   "modela",
-			want: pb.ModelLimit{
+			want: &pb.ModelLimit{
 				MaxRpm: 100,
 				MaxTpm: 10000,
 			},
@@ -131,7 +131,7 @@ func TestGCPQuotaClient_ResolveLimit(t *testing.T) {
 		// Region/Model Match: Matches region/model when project is empty.
 		{
 			name: "exact_match_region_model_empty_project",
-			limits: map[string]pb.ModelLimit{
+			limits: map[string]*pb.ModelLimit{
 				"us-central1/modela": {
 					MaxRpm: 100,
 					MaxTpm: 10000,
@@ -144,7 +144,7 @@ func TestGCPQuotaClient_ResolveLimit(t *testing.T) {
 			project: "",
 			region:  "us-central1",
 			model:   "modela",
-			want: pb.ModelLimit{
+			want: &pb.ModelLimit{
 				MaxRpm: 100,
 				MaxTpm: 10000,
 			},
@@ -152,7 +152,7 @@ func TestGCPQuotaClient_ResolveLimit(t *testing.T) {
 		//Model Match: Matches model
 		{
 			name: "exact_match_model",
-			limits: map[string]pb.ModelLimit{
+			limits: map[string]*pb.ModelLimit{
 				"modela": {
 					MaxRpm: 100,
 					MaxTpm: 10000,
@@ -165,7 +165,7 @@ func TestGCPQuotaClient_ResolveLimit(t *testing.T) {
 			project: "",
 			region:  "us-central1",
 			model:   "modela",
-			want: pb.ModelLimit{
+			want: &pb.ModelLimit{
 				MaxRpm: 100,
 				MaxTpm: 10000,
 			},
@@ -173,7 +173,7 @@ func TestGCPQuotaClient_ResolveLimit(t *testing.T) {
 		// Substring Match: Matches a model family suffix.
 		{
 			name: "exact_match_model",
-			limits: map[string]pb.ModelLimit{
+			limits: map[string]*pb.ModelLimit{
 				"flash-lite": {
 					MaxRpm: 100,
 					MaxTpm: 10000,
@@ -186,7 +186,7 @@ func TestGCPQuotaClient_ResolveLimit(t *testing.T) {
 			project: "abc",
 			region:  "us-central1",
 			model:   "modela-flash-lite",
-			want: pb.ModelLimit{
+			want: &pb.ModelLimit{
 				MaxRpm: 100,
 				MaxTpm: 10000,
 			},
@@ -198,7 +198,7 @@ func TestGCPQuotaClient_ResolveLimit(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := gqc.resolveLimit(tt.limits, tt.project, tt.region, tt.model)
+			got := gqc.resolveFallbackLimit(tt.limits, tt.project, tt.region, tt.model)
 			if got.MaxRpm != tt.want.MaxRpm || got.MaxTpm != tt.want.MaxTpm {
 				t.Errorf("resolveLimit() = %+v, want RPM %d / TPM %d", got, tt.want.MaxRpm, tt.want.MaxTpm)
 			}
@@ -218,11 +218,11 @@ func Test_FetchMetrics(t *testing.T) {
 	// 1. Initialize client with default config limits (fallbacks)
 	gqc := NewMockGCPClient(
 		ctx,
-		map[string]pb.ModelLimit{
+		map[string]*pb.ModelLimit{
 			"projecta/us-central1/model1": {MaxRpm: 100, MaxTpm: 5000},
 			"projectb/us-central1/model1": {MaxRpm: 100, MaxTpm: 5000},
 		},
-		map[string]pb.ModelLimit{
+		map[string]*pb.ModelLimit{
 			"us-central1/model1": {MaxRpm: 500, MaxTpm: 25000},
 		},
 	)
@@ -368,7 +368,7 @@ func Test_FetchMetrics(t *testing.T) {
 
 func TestNewGCPClient_Validation(t *testing.T) {
 	ctx := context.Background()
-	dummyLimits := map[string]pb.ModelLimit{}
+	dummyLimits := map[string]*pb.ModelLimit{}
 	dummyQuota := &MockQuotaRequestClient{}
 	dummyUsage := &MockUsageRequestClient{}
 
@@ -404,16 +404,28 @@ func TestRawModelQuota_GetKey_Errors(t *testing.T) {
 	}
 }
 
+// Replace TestFetchMetrics_APIFailure with:
 func TestFetchMetrics_APIFailure(t *testing.T) {
 	ctx := context.Background()
-	gqc := NewMockGCPClient(ctx, map[string]pb.ModelLimit{}, map[string]pb.ModelLimit{})
+	projectLimits := map[string]*pb.ModelLimit{
+		"gemini-pro": {MaxRpm: 120, MaxTpm: 5000},
+	}
+	gqc := NewMockGCPClient(ctx, projectLimits, map[string]*pb.ModelLimit{})
 
-	// Inject a hard API error
+	// Inject a hard API error into the Quota client
 	mockQuota := gqc.quotaClient.(*MockQuotaRequestClient)
 	mockQuota.Err = errors.New("API Quota Limit Exceeded")
 
-	_, err := gqc.FetchMetrics(ctx, []string{"proj"}, []string{"us-central1"}, []string{"gemini-pro"})
-	if err == nil {
-		t.Fatal("Expected FetchMetrics to fail when API returns error, but it succeeded")
+	got, err := gqc.FetchMetrics(ctx, []string{"proj"}, []string{"us-central1"}, []string{"gemini-pro"})
+	if err != nil {
+		t.Fatalf("Expected FetchMetrics to gracefully fall back on API error, but got: %v", err)
+	}
+
+	q, ok := got["proj/us-central1/gemini-pro"]
+	if !ok {
+		t.Fatal("Expected quota entry for proj/us-central1/gemini-pro, got nil")
+	}
+	if q.MaxRpm != 120 || q.MaxTpm != 5000 {
+		t.Errorf("Expected fallback limits (120/5000), got MaxRpm=%d, MaxTpm=%d", q.MaxRpm, q.MaxTpm)
 	}
 }
