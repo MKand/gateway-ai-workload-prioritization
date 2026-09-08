@@ -17,7 +17,7 @@ type Config struct {
 	Models                  []string                 `json:"models" yaml:"models"`
 	PollInterval            time.Duration            `json:"pollInterval" yaml:"poll_interval"`
 	PollTimeout             time.Duration            `json:"pollTimeout" yaml:"poll_timeout"`
-	SafetyMargin            float64                  `json:"safetyMargin" yaml:"safety_margin"`
+	SafetyMarginPercent     int64                    `json:"safetyMargin" yaml:"safety_margin"`
 	ShedThresholdBestEffort float64                  `json:"shedThresholdBestEffort" yaml:"shed_threshold_best_effort"`
 	DefaultProjectLimits    map[string]pb.ModelLimit `json:"defaultProjectLimits" yaml:"default_project_limits"`
 	DefaultOrgLimits        map[string]pb.ModelLimit `json:"defaultOrgLimits" yaml:"default_org_limits"`

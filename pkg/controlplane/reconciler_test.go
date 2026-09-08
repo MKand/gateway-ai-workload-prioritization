@@ -54,10 +54,10 @@ func TestReconcile_AggregatesAndCalculates(t *testing.T) {
 	store := NewInMemoryStore()
 
 	cfg := &governor.Config{
-		ProjectIDs:   []string{"projecta", "projectb"},
-		Regions:      []string{"us-central1", "us-west1"},
-		Models:       []string{"model1_flash", "model1_pro"},
-		SafetyMargin: 0.3,
+		ProjectIDs:          []string{"projecta", "projectb"},
+		Regions:             []string{"us-central1", "us-west1"},
+		Models:              []string{"model1_flash", "model1_pro"},
+		SafetyMarginPercent: 30,
 		DefaultProjectLimits: map[string]pb.ModelLimit{
 			"projecta/us-central1/model1_pro":   {MaxRpm: 100, MaxTpm: 5000},
 			"projecta/us-west1/model1_pro":      {MaxRpm: 100, MaxTpm: 5000},
@@ -161,11 +161,11 @@ func TestReconciler_LifecycleStart(t *testing.T) {
 	spyStore := &SpyStore{}
 
 	cfg := &governor.Config{
-		ProjectIDs:   []string{"projecta"},
-		Regions:      []string{"us-central1"},
-		Models:       []string{"model1_pro"},
-		PollInterval: 10 * time.Millisecond,
-		SafetyMargin: 0.1,
+		ProjectIDs:          []string{"projecta"},
+		Regions:             []string{"us-central1"},
+		Models:              []string{"model1_pro"},
+		PollInterval:        10 * time.Millisecond,
+		SafetyMarginPercent: 10,
 		DefaultProjectLimits: map[string]pb.ModelLimit{
 			"projecta/us-central1/model1_pro": {MaxRpm: 100, MaxTpm: 5000},
 		},
@@ -202,10 +202,10 @@ func TestReconcile_ZeroQuotaSafety(t *testing.T) {
 
 	// 1. Setup config with MaxRPM and MaxTPM configured as 0
 	cfg := &governor.Config{
-		ProjectIDs:   []string{"projecta"},
-		Regions:      []string{"us-central1"},
-		Models:       []string{"model1_pro"},
-		SafetyMargin: 0.3, // 30% margin
+		ProjectIDs:          []string{"projecta"},
+		Regions:             []string{"us-central1"},
+		Models:              []string{"model1_pro"},
+		SafetyMarginPercent: 30, // 30% margin
 		DefaultProjectLimits: map[string]pb.ModelLimit{
 			// Max limit is 0
 			"projecta/us-central1/model1_pro": {MaxRpm: 0, MaxTpm: 0},
@@ -273,10 +273,10 @@ func TestReconciler_ErrorResilience(t *testing.T) {
 	store := NewInMemoryStore()
 
 	cfg := &governor.Config{
-		ProjectIDs:   []string{"projecta", "projectb"},
-		Regions:      []string{"us-central1", "us-west1"},
-		Models:       []string{"model1_flash", "model1_pro"},
-		SafetyMargin: 0.3,
+		ProjectIDs:          []string{"projecta", "projectb"},
+		Regions:             []string{"us-central1", "us-west1"},
+		Models:              []string{"model1_flash", "model1_pro"},
+		SafetyMarginPercent: 30,
 		DefaultProjectLimits: map[string]pb.ModelLimit{
 			"projecta/us-central1/model1_pro": {MaxRpm: 100, MaxTpm: 5000},
 		},
