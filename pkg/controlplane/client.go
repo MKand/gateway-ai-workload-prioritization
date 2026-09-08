@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"strings"
 	"time"
 
@@ -70,14 +71,14 @@ func (mqc *RawModelQuota) GetKey() (string, error) {
 }
 
 type GCPClient struct {
-	projectLimits    map[string]pb.ModelLimit
-	orgLimits        map[string]pb.ModelLimit
+	projectLimits    map[string]*pb.ModelLimit
+	orgLimits        map[string]*pb.ModelLimit
 	quotaClient      QuotaRequestClient
 	monitoringClient UsageRequestClient
 	orgID            string
 }
 
-func NewGCPClient(ctx context.Context, orgID string, projectLimits, orgLimits map[string]pb.ModelLimit,
+func NewGCPClient(ctx context.Context, orgID string, projectLimits, orgLimits map[string]*pb.ModelLimit,
 	quotaClient QuotaRequestClient, monitoringClient UsageRequestClient) (*GCPClient, error) {
 
 	if orgID == "" {
@@ -160,22 +161,26 @@ func (gqc *GCPClient) FetchMetrics(ctx context.Context, projectIDs []string, reg
 	for _, p := range projectIDs {
 		rawRPM, err := gqc.fetchQuotaInfo(ctx, p, rpmQuotaID)
 		if err != nil {
-			return nil, fmt.Errorf("failed to fetch RPM limits for project %s: %w", p, err)
+			log.Printf("Warning: failed to fetch RPM limits for project %s: %v. Falling back to default limits.", p, err)
+			rawRPM = nil
 		}
 
 		rawTPM, err := gqc.fetchQuotaInfo(ctx, p, tpmQuotaID)
 		if err != nil {
-			return nil, fmt.Errorf("failed to fetch TPM limits for project %s: %w", p, err)
+			log.Printf("Warning: failed to fetch TPM limits for project %s: %v. Falling back to default limits.", p, err)
+			rawTPM = nil
 		}
 
 		rpmUsage, err := gqc.fetchUsageInfo(ctx, p, rpmMetricType)
 		if err != nil {
 			return nil, fmt.Errorf("failed to fetch RPM usage for project %s: %w", p, err)
+
 		}
 
 		tpmUsage, err := gqc.fetchUsageInfo(ctx, p, tpmMetricType)
 		if err != nil {
 			return nil, fmt.Errorf("failed to fetch TPM usage for project %s: %w", p, err)
+
 		}
 
 		gcpData[p] = projectData{
@@ -189,7 +194,7 @@ func (gqc *GCPClient) FetchMetrics(ctx context.Context, projectIDs []string, reg
 	for _, r := range regions {
 		for _, m := range models {
 			// 1. Add Org-level quota (with org limits, 0 usage)
-			orgLimit := gqc.resolveLimit(gqc.orgLimits, "", r, m)
+			orgLimit := gqc.resolveFallbackLimit(gqc.orgLimits, "", r, m)
 			oKey := fmt.Sprintf("%s/%s", strings.ToLower(r), strings.ToLower(m))
 			resp[oKey] = &RawModelQuota{
 				Region:     r,
@@ -209,12 +214,12 @@ func (gqc *GCPClient) FetchMetrics(ctx context.Context, projectIDs []string, reg
 				if limit, exists := data.rpmLimits[key]; exists && limit > 0 {
 					maxRpm = limit
 				} else {
-					maxRpm = gqc.resolveLimit(gqc.projectLimits, p, r, m).MaxRpm
+					maxRpm = gqc.resolveFallbackLimit(gqc.projectLimits, p, r, m).MaxRpm
 				}
 				if limit, exists := data.tpmLimits[key]; exists && limit > 0 {
 					maxTpm = limit
 				} else {
-					maxTpm = gqc.resolveLimit(gqc.projectLimits, p, r, m).MaxTpm
+					maxTpm = gqc.resolveFallbackLimit(gqc.projectLimits, p, r, m).MaxTpm
 				}
 
 				if usage, exists := data.rpmUsage[key]; exists {
@@ -309,7 +314,7 @@ func (gqc *GCPClient) fetchQuotaInfo(ctx context.Context, projectID, quotaID str
 	return info, nil
 }
 
-func (gqc *GCPClient) resolveLimit(limits map[string]pb.ModelLimit, project, region, model string) pb.ModelLimit {
+func (gqc *GCPClient) resolveFallbackLimit(limits map[string]*pb.ModelLimit, project, region, model string) *pb.ModelLimit {
 	modelLower := strings.ToLower(model)
 	regionLower := strings.ToLower(region)
 	projectLower := strings.ToLower(project)
@@ -342,7 +347,7 @@ func (gqc *GCPClient) resolveLimit(limits map[string]pb.ModelLimit, project, reg
 			return limit
 		}
 	}
-	return pb.ModelLimit{MaxRpm: FallbackMaxRPM, MaxTpm: FallbackMaxTPM}
+	return &pb.ModelLimit{MaxRpm: FallbackMaxRPM, MaxTpm: FallbackMaxTPM}
 }
 
 func extractLimits(qi *cloudquotaspb.QuotaInfo, targetRegions, targetModels []string) map[string]int64 {
@@ -445,7 +450,7 @@ func (c *MockUsageRequestClient) makeUsageRequest(ctx context.Context, req *moni
 	return val, nil
 }
 
-func NewMockGCPClient(ctx context.Context, projectLimits, orgLimits map[string]pb.ModelLimit) *GCPClient {
+func NewMockGCPClient(ctx context.Context, projectLimits, orgLimits map[string]*pb.ModelLimit) *GCPClient {
 	return &GCPClient{
 		orgID:            "mockorgid",
 		projectLimits:    projectLimits,
