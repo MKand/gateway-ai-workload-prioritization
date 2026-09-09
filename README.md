@@ -50,3 +50,4 @@ repo/
 - [Google Cloud DNS Private Zones](https://cloud.google.com/dns/docs/zones/zones-overview#private_zones)
 - [Google Cloud Quotas Overview](https://cloud.google.com/docs/quotas/overview)
 - [Vertex AI Generative AI Quotas & Limits](https://cloud.google.com/vertex-ai/generative-ai/docs/quotas)
+

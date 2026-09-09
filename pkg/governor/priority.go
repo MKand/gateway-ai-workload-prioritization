@@ -40,28 +40,28 @@ func (p *DefaultPriorityPolicy) Name() string {
 }
 
 // Evaluate evaluates a ModelQuota assuming best-effort priority by default.
-func (p *DefaultPriorityPolicy) Evaluate(quota *pb.ModelQuota) pb.Decision {
-	return EvaluatePriority(pb.Priority_PRIORITY_BEST_EFFORT, quota, p.ShedThreshold)
+func (p *DefaultPriorityPolicy) Evaluate(quota *pb.ModelQuota) Decision {
+	return EvaluatePriority(Priority_PRIORITY_BEST_EFFORT, quota, p.ShedThreshold)
 }
 
 // EvaluatePriority evaluates the admission of a request based on its priority tier and real-time quota state.
-func EvaluatePriority(priority pb.Priority, quota *pb.ModelQuota, shedThreshold float64) pb.Decision {
+func EvaluatePriority(priority Priority, quota *pb.ModelQuota, shedThreshold float64) Decision {
 	if shedThreshold <= 0 || shedThreshold > 1.0 {
 		shedThreshold = DefaultShedThresholdBestEffort
 	}
 
 	if quota == nil {
 		// If quota data is unavailable, fail open (allow forwarding) to avoid complete outages
-		return pb.Decision{
+		return Decision{
 			Drop:   false,
 			Reason: "quota data unavailable, admitting optimistically",
 		}
 	}
 
 	// 1. BEST EFFORT TRAFFIC: Early shedding at > 70% threshold
-	if priority == pb.Priority_PRIORITY_BEST_EFFORT || priority == pb.Priority_PRIORITY_UNSPECIFIED {
+	if priority == Priority_PRIORITY_BEST_EFFORT || priority == Priority_PRIORITY_UNSPECIFIED {
 		if quota.UtilizationRpm >= shedThreshold || quota.UtilizationTpm >= shedThreshold {
-			return pb.Decision{
+			return Decision{
 				Drop: true,
 				Reason: fmt.Sprintf(
 					"best_effort shed: utilization (RPM: %.1f%%, TPM: %.1f%%) exceeded threshold %.1f%%",
@@ -75,24 +75,24 @@ func EvaluatePriority(priority pb.Priority, quota *pb.ModelQuota, shedThreshold 
 
 		// Also shed if headroom is zero or negative when limits are defined
 		if (quota.MaxRpm > 0 && quota.HeadroomRpm <= 0) || (quota.MaxTpm > 0 && quota.HeadroomTpm <= 0) {
-			return pb.Decision{
+			return Decision{
 				Drop:       true,
 				Reason:     "best_effort shed: no usable headroom remaining",
 				RetryAfter: durationpb.New(DefaultRetryAfter),
 			}
 		}
 
-		return pb.Decision{
+		return Decision{
 			Drop:   false,
 			Reason: "best_effort admitted within quota limits",
 		}
 	}
 
 	// 2. CRITICAL TRAFFIC: Protected up to saturation threshold (95%)
-	if priority == pb.Priority_PRIORITY_CRITICAL {
+	if priority == Priority_PRIORITY_CRITICAL {
 		if IsSaturated(quota) {
 			// Saturated: needs fallback cascade
-			return pb.Decision{
+			return Decision{
 				Drop: false,
 				Reason: fmt.Sprintf(
 					"critical capacity saturated (RPM: %.1f%%, TPM: %.1f%%): fallback cascade required",
@@ -102,14 +102,14 @@ func EvaluatePriority(priority pb.Priority, quota *pb.ModelQuota, shedThreshold 
 			}
 		}
 
-		return pb.Decision{
+		return Decision{
 			Drop:   false,
 			Reason: "critical admitted with guaranteed headroom",
 		}
 	}
 
 	// 3. CUSTOM TRAFFIC: Admitted by default (evaluated by custom cascade DAGs)
-	return pb.Decision{
+	return Decision{
 		Drop:   false,
 		Reason: "custom priority admitted",
 	}

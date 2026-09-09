@@ -4,24 +4,72 @@ import (
 	"time"
 
 	pb "github.com/MKand/gateway-ai-workload-prioritization/gen/go/governor/v1"
+	"google.golang.org/protobuf/types/known/durationpb"
 )
 
 type PriorityPolicy interface {
 	Name() string
-	Evaluate(quota *pb.ModelQuota) pb.Decision
+	Evaluate(quota *pb.ModelQuota) Decision
 }
 
 type Config struct {
-	ProjectIDs              []string                  `json:"projectIds" yaml:"project_ids"`
-	Regions                 []string                  `json:"regions" yaml:"regions"`
-	Models                  []string                  `json:"models" yaml:"models"`
-	PollInterval            time.Duration             `json:"pollInterval" yaml:"poll_interval"`
-	PollTimeout             time.Duration             `json:"pollTimeout" yaml:"poll_timeout"`
-	SafetyMarginPercent     int64                     `json:"safetyMargin" yaml:"safety_margin"`
-	ShedThresholdBestEffort float64                   `json:"shedThresholdBestEffort" yaml:"shed_threshold_best_effort"`
-	DefaultProjectLimits    map[string]*pb.ModelLimit `json:"defaultProjectLimits" yaml:"default_project_limits"`
-	DefaultOrgLimits        map[string]*pb.ModelLimit `json:"defaultOrgLimits" yaml:"default_org_limits"`
-	CustomPolicies          map[string]CustomPolicy   `json:"customPolicies,omitempty" yaml:"custom_policies,omitempty"`
+	ProjectIDs              []string                `json:"projectIds" yaml:"project_ids"`
+	Regions                 []string                `json:"regions" yaml:"regions"`
+	Models                  []string                `json:"models" yaml:"models"`
+	PollInterval            time.Duration           `json:"pollInterval" yaml:"poll_interval"`
+	PollTimeout             time.Duration           `json:"pollTimeout" yaml:"poll_timeout"`
+	SafetyMarginPercent     int64                   `json:"safetyMargin" yaml:"safety_margin"`
+	ShedThresholdBestEffort float64                 `json:"shedThresholdBestEffort" yaml:"shed_threshold_best_effort"`
+	DefaultProjectLimits    map[string]*ModelLimit  `json:"defaultProjectLimits" yaml:"default_project_limits"`
+	DefaultOrgLimits        map[string]*ModelLimit  `json:"defaultOrgLimits" yaml:"default_org_limits"`
+	CustomPolicies          map[string]CustomPolicy `json:"customPolicies,omitempty" yaml:"custom_policies,omitempty"`
+}
+
+// Priority represents the classification of incoming LLM traffic.
+type Priority int32
+
+const (
+	Priority_PRIORITY_UNSPECIFIED Priority = 0
+	Priority_PRIORITY_CRITICAL    Priority = 1 // User-facing interactive chat, production workflows (protected)
+	Priority_PRIORITY_BEST_EFFORT Priority = 2 // Offline indexing, synthetic testing (shed early at >70%)
+	Priority_PRIORITY_CUSTOM      Priority = 3 // Follows custom cascade DAG
+)
+
+// Enum value maps for Priority.
+var (
+	Priority_name = map[int32]string{
+		0: "PRIORITY_UNSPECIFIED",
+		1: "PRIORITY_CRITICAL",
+		2: "PRIORITY_BEST_EFFORT",
+		3: "PRIORITY_CUSTOM",
+	}
+	Priority_value = map[string]int32{
+		"PRIORITY_UNSPECIFIED": 0,
+		"PRIORITY_CRITICAL":    1,
+		"PRIORITY_BEST_EFFORT": 2,
+		"PRIORITY_CUSTOM":      3,
+	}
+)
+
+type ModelLimit struct {
+	MaxRpm int64 `json:"max_rpm" yaml:"max_rpm"`
+	MaxTpm int64 `json:"max_tpm" yaml:"max_tpm"`
+}
+
+type Decision struct {
+	Drop          bool                 `json:"drop"`                     // True if request must be shed with HTTP 429
+	ReplaceModel  string               `json:"replace_model,omitempty"`  // If set, rewrite target model in URL path
+	ReplaceRegion string               `json:"replace_region,omitempty"` // If set, rewrite target region in URL/host
+	Reason        string               `json:"reason,omitempty"`         // Diagnostic reason for metrics/logs
+	RetryAfter    *durationpb.Duration `json:"retry_after,omitempty"`    // Header value for HTTP 429
+}
+
+func (d *Decision) IsDrop() bool {
+	return d.Drop
+}
+
+func (d *Decision) IsForward() bool {
+	return !d.Drop && d.ReplaceModel == "" && d.ReplaceRegion == ""
 }
 
 type CascadeStep struct {

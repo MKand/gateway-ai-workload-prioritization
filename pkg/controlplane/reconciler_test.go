@@ -58,7 +58,7 @@ func TestReconcile_AggregatesAndCalculates(t *testing.T) {
 		Regions:             []string{"us-central1", "us-west1"},
 		Models:              []string{"model1_flash", "model1_pro"},
 		SafetyMarginPercent: 30,
-		DefaultProjectLimits: map[string]*pb.ModelLimit{
+		DefaultProjectLimits: map[string]*governor.ModelLimit{
 			"projecta/us-central1/model1_pro":   {MaxRpm: 100, MaxTpm: 5000},
 			"projecta/us-west1/model1_pro":      {MaxRpm: 100, MaxTpm: 5000},
 			"projecta/us-central1/model1_flash": {MaxRpm: 50, MaxTpm: 2500},
@@ -66,7 +66,7 @@ func TestReconcile_AggregatesAndCalculates(t *testing.T) {
 			"projectb/us-central1/model1_flash": {MaxRpm: 50, MaxTpm: 2500},
 			"projectb/us-west1/model1_flash":    {MaxRpm: 50, MaxTpm: 2500},
 		},
-		DefaultOrgLimits: map[string]*pb.ModelLimit{
+		DefaultOrgLimits: map[string]*governor.ModelLimit{
 			"us-central1/model1_pro":   {MaxRpm: 500, MaxTpm: 25000},
 			"us-west1/model1_pro":      {MaxRpm: 500, MaxTpm: 25000},
 			"us-central1/model1_flash": {MaxRpm: 200, MaxTpm: 10000},
@@ -106,7 +106,7 @@ func TestReconcile_AggregatesAndCalculates(t *testing.T) {
 	}
 
 	// 1. Assert Org-level quota (Aggregated usage, static config limits)
-	orgQuota, err := snapshot.GetOrgQuota("us-central1", "model1_pro")
+	orgQuota, err := governor.GetOrgQuota(snapshot, "us-central1", "model1_pro")
 	if err != nil {
 		t.Errorf("Failed to find org quota: %v", err)
 	} else {
@@ -125,7 +125,7 @@ func TestReconcile_AggregatesAndCalculates(t *testing.T) {
 	}
 
 	// 2. Assert Project-level quota (Static limits, mock usage, individual math)
-	p1, err := snapshot.GetProjectQuota("projecta", "us-central1", "model1_pro")
+	p1, err := governor.GetProjectQuota(snapshot, "projecta", "us-central1", "model1_pro")
 	if err != nil {
 		t.Errorf("Failed to find project quota: %v", err)
 	} else {
@@ -166,10 +166,10 @@ func TestReconciler_LifecycleStart(t *testing.T) {
 		Models:              []string{"model1_pro"},
 		PollInterval:        10 * time.Millisecond,
 		SafetyMarginPercent: 10,
-		DefaultProjectLimits: map[string]*pb.ModelLimit{
+		DefaultProjectLimits: map[string]*governor.ModelLimit{
 			"projecta/us-central1/model1_pro": {MaxRpm: 100, MaxTpm: 5000},
 		},
-		DefaultOrgLimits: map[string]*pb.ModelLimit{
+		DefaultOrgLimits: map[string]*governor.ModelLimit{
 			"us-central1/model1_pro": {MaxRpm: 500, MaxTpm: 25000},
 		},
 	}
@@ -206,11 +206,11 @@ func TestReconcile_ZeroQuotaSafety(t *testing.T) {
 		Regions:             []string{"us-central1"},
 		Models:              []string{"model1_pro"},
 		SafetyMarginPercent: 30, // 30% margin
-		DefaultProjectLimits: map[string]*pb.ModelLimit{
+		DefaultProjectLimits: map[string]*governor.ModelLimit{
 			// Max limit is 0
 			"projecta/us-central1/model1_pro": {MaxRpm: 0, MaxTpm: 0},
 		},
-		DefaultOrgLimits: map[string]*pb.ModelLimit{
+		DefaultOrgLimits: map[string]*governor.ModelLimit{
 			// Org limit is also 0
 			"us-central1/model1_pro": {MaxRpm: 0, MaxTpm: 0},
 		},
@@ -244,7 +244,7 @@ func TestReconcile_ZeroQuotaSafety(t *testing.T) {
 	}
 	// 4. Assert Project-level math fallbacks:
 	// MaxRPM is 0. UsableRPM = 0. Usage = 100 (from mock). Headroom = 0 - 100 = -100.
-	p, err := snapshot.GetProjectQuota("projecta", "us-central1", "model1_pro")
+	p, err := governor.GetProjectQuota(snapshot, "projecta", "us-central1", "model1_pro")
 	if err != nil {
 		t.Fatalf("failed to find project quota: %v", err)
 	}
@@ -256,7 +256,7 @@ func TestReconcile_ZeroQuotaSafety(t *testing.T) {
 	}
 
 	// 5. Assert Org-level math fallbacks:
-	org, err := snapshot.GetOrgQuota("us-central1", "model1_pro")
+	org, err := governor.GetOrgQuota(snapshot, "us-central1", "model1_pro")
 	if err != nil {
 		t.Fatalf("failed to find org quota: %v", err)
 	}
@@ -277,10 +277,10 @@ func TestReconciler_ErrorResilience(t *testing.T) {
 		Regions:             []string{"us-central1", "us-west1"},
 		Models:              []string{"model1_flash", "model1_pro"},
 		SafetyMarginPercent: 30,
-		DefaultProjectLimits: map[string]*pb.ModelLimit{
+		DefaultProjectLimits: map[string]*governor.ModelLimit{
 			"projecta/us-central1/model1_pro": {MaxRpm: 100, MaxTpm: 5000},
 		},
-		DefaultOrgLimits: map[string]*pb.ModelLimit{
+		DefaultOrgLimits: map[string]*governor.ModelLimit{
 			"us-central1/model1_pro": {MaxRpm: 500, MaxTpm: 25000},
 		},
 	}

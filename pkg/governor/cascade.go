@@ -56,10 +56,10 @@ func NewCascadeEngine(customPolicies map[string]CustomPolicy) (*CascadeEngine, e
 }
 
 // Evaluate evaluates whether the requested model/region can serve the request or if a fallback is required.
-func (ce *CascadeEngine) Evaluate(snapshot *pb.QuotaSnapshot, project, region, model string, priority pb.Priority, policyName string) pb.Decision {
+func (ce *CascadeEngine) Evaluate(snapshot *pb.QuotaSnapshot, project, region, model string, priority Priority, policyName string) Decision {
 	primaryQuota := getEffectiveQuota(snapshot, project, region, model)
 	if primaryQuota == nil {
-		return pb.Decision{
+		return Decision{
 			Drop:   false,
 			Reason: "primary quota data unavailable, admitting optimistically",
 		}
@@ -69,38 +69,38 @@ func (ce *CascadeEngine) Evaluate(snapshot *pb.QuotaSnapshot, project, region, m
 	isPrimarySaturated := IsSaturated(primaryQuota)
 
 	// 1. CRITICAL: Pass-through (never mutate or drop)
-	if priority == pb.Priority_PRIORITY_CRITICAL {
+	if priority == Priority_PRIORITY_CRITICAL {
 		reason := "priority traffic is not modified. The target status is NOT saturated"
 		if isPrimarySaturated {
 			reason = "priority traffic is not modified. WARNING: The target status is near saturated"
 		}
-		return pb.Decision{
+		return Decision{
 			Drop:   false,
 			Reason: reason,
 		}
 	}
 
 	// 2. BEST_EFFORT: Shed if saturated or above threshold; never cascades
-	if priority == pb.Priority_PRIORITY_BEST_EFFORT || priority == pb.Priority_PRIORITY_UNSPECIFIED {
+	if priority == Priority_PRIORITY_BEST_EFFORT || priority == Priority_PRIORITY_UNSPECIFIED {
 		isBestEffortShed := primaryQuota.UtilizationRpm >= DefaultShedThresholdBestEffort || primaryQuota.UtilizationTpm >= DefaultShedThresholdBestEffort
 
 		if isPrimarySaturated || isBestEffortShed {
-			return pb.Decision{
+			return Decision{
 				Drop:       true,
 				Reason:     fmt.Sprintf("primary model %s is saturated/exceeded threshold (%s); best_effort does not cascade", model, formatUtilization(primaryQuota)),
 				RetryAfter: durationpb.New(DefaultRetryAfter),
 			}
 		}
-		return pb.Decision{
+		return Decision{
 			Drop:   false,
 			Reason: "best_effort admitted within threshold",
 		}
 	}
 
 	// 3. CUSTOM: Traverses explicit fallback steps if primary is saturated
-	if priority == pb.Priority_PRIORITY_CUSTOM {
+	if priority == Priority_PRIORITY_CUSTOM {
 		if !isPrimarySaturated {
-			return pb.Decision{
+			return Decision{
 				Drop:   false,
 				Reason: fmt.Sprintf("custom traffic: primary %s in %s healthy, admitted", model, region),
 			}
@@ -108,7 +108,7 @@ func (ce *CascadeEngine) Evaluate(snapshot *pb.QuotaSnapshot, project, region, m
 
 		policy, exists := ce.customPolicies[normPolicyName]
 		if !exists || len(policy.Cascade) == 0 {
-			return pb.Decision{
+			return Decision{
 				Drop:       true,
 				Reason:     fmt.Sprintf("ERROR: given policy name %s does not exist or has empty cascade; primary model %s is saturated (%s); Treating as best_effort does not cascade", normPolicyName, model, formatUtilization(primaryQuota)),
 				RetryAfter: durationpb.New(DefaultRetryAfter),
@@ -118,7 +118,7 @@ func (ce *CascadeEngine) Evaluate(snapshot *pb.QuotaSnapshot, project, region, m
 		for _, cs := range policy.Cascade {
 			quota := getEffectiveQuota(snapshot, project, cs.TargetRegion, cs.TargetModel)
 			if quota != nil && !IsSaturated(quota) {
-				return pb.Decision{
+				return Decision{
 					Drop:          false,
 					ReplaceModel:  cs.TargetModel,
 					ReplaceRegion: cs.TargetRegion,
@@ -130,14 +130,14 @@ func (ce *CascadeEngine) Evaluate(snapshot *pb.QuotaSnapshot, project, region, m
 			}
 		}
 
-		return pb.Decision{
+		return Decision{
 			Drop:       true,
 			Reason:     fmt.Sprintf("Primary target and cascade targets defined in policy %s are all saturated; Dropping traffic", normPolicyName),
 			RetryAfter: durationpb.New(DefaultRetryAfter),
 		}
 	}
 
-	return pb.Decision{
+	return Decision{
 		Drop:   false,
 		Reason: "primary is healthy, traffic is being forwarded as expected",
 	}
@@ -151,13 +151,13 @@ func getEffectiveQuota(snapshot *pb.QuotaSnapshot, project, region, model string
 
 	// 1. Try project-specific quota first
 	if project != "" {
-		if q, err := snapshot.GetProjectQuota(project, region, model); err == nil && q != nil {
+		if q, err := GetProjectQuota(snapshot, project, region, model); err == nil && q != nil {
 			return q
 		}
 	}
 
 	// 2. Fall back to organization pooled quota
-	if q, err := snapshot.GetOrgQuota(region, model); err == nil && q != nil {
+	if q, err := GetOrgQuota(snapshot, region, model); err == nil && q != nil {
 		return q
 	}
 

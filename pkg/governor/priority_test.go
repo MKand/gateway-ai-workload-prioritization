@@ -10,7 +10,7 @@ import (
 func TestEvaluatePriority(t *testing.T) {
 	tests := []struct {
 		name          string
-		priority      pb.Priority
+		priority      governor.Priority
 		quota         *pb.ModelQuota
 		shedThreshold float64
 		wantDrop      bool
@@ -18,7 +18,7 @@ func TestEvaluatePriority(t *testing.T) {
 	}{
 		{
 			name:     "best effort under 70% threshold -> allowed",
-			priority: pb.Priority_PRIORITY_BEST_EFFORT,
+			priority: governor.Priority_PRIORITY_BEST_EFFORT,
 			quota: &pb.ModelQuota{
 				MaxRpm:         1000,
 				MaxTpm:         2000000,
@@ -33,7 +33,7 @@ func TestEvaluatePriority(t *testing.T) {
 		},
 		{
 			name:     "best effort over 70% threshold -> shed 429",
-			priority: pb.Priority_PRIORITY_BEST_EFFORT,
+			priority: governor.Priority_PRIORITY_BEST_EFFORT,
 			quota: &pb.ModelQuota{
 				MaxRpm:         1000,
 				MaxTpm:         2000000,
@@ -48,7 +48,7 @@ func TestEvaluatePriority(t *testing.T) {
 		},
 		{
 			name:     "best effort with zero headroom -> shed 429",
-			priority: pb.Priority_PRIORITY_BEST_EFFORT,
+			priority: governor.Priority_PRIORITY_BEST_EFFORT,
 			quota: &pb.ModelQuota{
 				MaxRpm:         1000,
 				MaxTpm:         2000000,
@@ -63,7 +63,7 @@ func TestEvaluatePriority(t *testing.T) {
 		},
 		{
 			name:     "critical traffic under 95% -> allowed",
-			priority: pb.Priority_PRIORITY_CRITICAL,
+			priority: governor.Priority_PRIORITY_CRITICAL,
 			quota: &pb.ModelQuota{
 				MaxRpm:         1000,
 				MaxTpm:         2000000,
@@ -78,7 +78,7 @@ func TestEvaluatePriority(t *testing.T) {
 		},
 		{
 			name:     "critical traffic over 95% -> flagged for fallback",
-			priority: pb.Priority_PRIORITY_CRITICAL,
+			priority: governor.Priority_PRIORITY_CRITICAL,
 			quota: &pb.ModelQuota{
 				MaxRpm:         1000,
 				MaxTpm:         2000000,
@@ -93,7 +93,7 @@ func TestEvaluatePriority(t *testing.T) {
 		},
 		{
 			name:          "nil quota -> fails open optimistically",
-			priority:      pb.Priority_PRIORITY_BEST_EFFORT,
+			priority:      governor.Priority_PRIORITY_BEST_EFFORT,
 			quota:         nil,
 			shedThreshold: 0.70,
 			wantDrop:      false,

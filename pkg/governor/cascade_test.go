@@ -96,7 +96,7 @@ func TestCascadeEngine_Evaluate(t *testing.T) {
 
 	t.Run("nil primary quota -> admitted optimistically (fail-open)", func(t *testing.T) {
 		snapshot := &pb.QuotaSnapshot{}
-		dec := engine.Evaluate(snapshot, "my-proj", "us-central1", "unknown-model", pb.Priority_PRIORITY_BEST_EFFORT, "")
+		dec := engine.Evaluate(snapshot, "my-proj", "us-central1", "unknown-model", governor.Priority_PRIORITY_BEST_EFFORT, "")
 		if dec.IsDrop() {
 			t.Errorf("expected fail-open for nil quota, got drop")
 		}
@@ -114,7 +114,7 @@ func TestCascadeEngine_Evaluate(t *testing.T) {
 			},
 		}
 
-		dec := engine.Evaluate(snapshot, "my-proj", "us-central1", "gemini-2.5-pro", pb.Priority_PRIORITY_CRITICAL, "")
+		dec := engine.Evaluate(snapshot, "my-proj", "us-central1", "gemini-2.5-pro", governor.Priority_PRIORITY_CRITICAL, "")
 		if dec.IsDrop() {
 			t.Errorf("expected critical to be admitted, got drop")
 		}
@@ -136,7 +136,7 @@ func TestCascadeEngine_Evaluate(t *testing.T) {
 			},
 		}
 
-		dec := engine.Evaluate(snapshot, "my-proj", "us-central1", "gemini-2.5-pro", pb.Priority_PRIORITY_CRITICAL, "")
+		dec := engine.Evaluate(snapshot, "my-proj", "us-central1", "gemini-2.5-pro", governor.Priority_PRIORITY_CRITICAL, "")
 		if dec.IsDrop() {
 			t.Errorf("critical traffic must never be dropped, got drop")
 		}
@@ -158,7 +158,7 @@ func TestCascadeEngine_Evaluate(t *testing.T) {
 			},
 		}
 
-		dec := engine.Evaluate(snapshot, "my-proj", "us-central1", "gemini-2.5-pro", pb.Priority_PRIORITY_BEST_EFFORT, "")
+		dec := engine.Evaluate(snapshot, "my-proj", "us-central1", "gemini-2.5-pro", governor.Priority_PRIORITY_BEST_EFFORT, "")
 		if dec.IsDrop() {
 			t.Errorf("expected best-effort under 70%% to be admitted, got drop")
 		}
@@ -177,7 +177,7 @@ func TestCascadeEngine_Evaluate(t *testing.T) {
 			},
 		}
 
-		dec := engine.Evaluate(snapshot, "my-proj", "us-central1", "gemini-2.5-pro", pb.Priority_PRIORITY_BEST_EFFORT, "")
+		dec := engine.Evaluate(snapshot, "my-proj", "us-central1", "gemini-2.5-pro", governor.Priority_PRIORITY_BEST_EFFORT, "")
 		if !dec.IsDrop() {
 			t.Errorf("expected best-effort above 70%% to be dropped")
 		}
@@ -196,7 +196,7 @@ func TestCascadeEngine_Evaluate(t *testing.T) {
 			},
 		}
 
-		dec := engine.Evaluate(snapshot, "my-proj", "us-central1", "gemini-2.5-pro", pb.Priority_PRIORITY_CUSTOM, "quality_first")
+		dec := engine.Evaluate(snapshot, "my-proj", "us-central1", "gemini-2.5-pro", governor.Priority_PRIORITY_CUSTOM, "quality_first")
 		if dec.IsDrop() {
 			t.Errorf("expected healthy custom request to be admitted, got drop")
 		}
@@ -235,7 +235,7 @@ func TestCascadeEngine_Evaluate(t *testing.T) {
 			},
 		}
 
-		dec := engine.Evaluate(snapshot, "my-proj", "us-central1", "gemini-2.5-pro", pb.Priority_PRIORITY_CUSTOM, "Quality_First")
+		dec := engine.Evaluate(snapshot, "my-proj", "us-central1", "gemini-2.5-pro", governor.Priority_PRIORITY_CUSTOM, "Quality_First")
 		if dec.IsDrop() {
 			t.Errorf("expected custom cascade to succeed, got drop")
 		}
@@ -256,7 +256,7 @@ func TestCascadeEngine_Evaluate(t *testing.T) {
 			},
 		}
 
-		dec := engine.Evaluate(snapshot, "my-proj", "us-central1", "gemini-2.5-pro", pb.Priority_PRIORITY_CUSTOM, "nonexistent")
+		dec := engine.Evaluate(snapshot, "my-proj", "us-central1", "gemini-2.5-pro", governor.Priority_PRIORITY_CUSTOM, "nonexistent")
 		if !dec.IsDrop() {
 			t.Errorf("expected drop for nonexistent policy on saturated primary")
 		}
@@ -272,7 +272,7 @@ func TestCascadeEngine_Evaluate(t *testing.T) {
 			},
 		}
 
-		dec := engine.Evaluate(snapshot, "my-proj", "us-central1", "gemini-2.5-pro", pb.Priority_PRIORITY_CUSTOM, "quality_first")
+		dec := engine.Evaluate(snapshot, "my-proj", "us-central1", "gemini-2.5-pro", governor.Priority_PRIORITY_CUSTOM, "quality_first")
 		if !dec.IsDrop() {
 			t.Errorf("expected drop when all cascade steps are exhausted")
 		}
@@ -301,7 +301,7 @@ func TestCascadeEngine_Evaluate(t *testing.T) {
 			},
 		}
 
-		dec := engine.Evaluate(snapshot, "my-proj", "us-central1", "gemini-2.5-pro", pb.Priority_PRIORITY_CUSTOM, "quality_first")
+		dec := engine.Evaluate(snapshot, "my-proj", "us-central1", "gemini-2.5-pro", governor.Priority_PRIORITY_CUSTOM, "quality_first")
 		if dec.IsDrop() {
 			t.Errorf("expected cascade to skip nil candidate and succeed, got drop: %s", dec.Reason)
 		}
@@ -323,7 +323,7 @@ func TestCascadeEngine_Evaluate(t *testing.T) {
 			},
 		}
 
-		dec := engine.Evaluate(snapshot, "unknown-proj", "us-central1", "gemini-2.5-pro", pb.Priority_PRIORITY_BEST_EFFORT, "")
+		dec := engine.Evaluate(snapshot, "unknown-proj", "us-central1", "gemini-2.5-pro", governor.Priority_PRIORITY_BEST_EFFORT, "")
 		if dec.IsDrop() {
 			t.Errorf("expected admission via org quota fallback, got drop: %s", dec.Reason)
 		}
@@ -345,7 +345,7 @@ func TestCascadeEngine_Evaluate(t *testing.T) {
 			},
 		}
 
-		dec := engine.Evaluate(snapshot, "my-proj", "us-central1", "gemini-2.5-pro", pb.Priority_PRIORITY_BEST_EFFORT, "")
+		dec := engine.Evaluate(snapshot, "my-proj", "us-central1", "gemini-2.5-pro", governor.Priority_PRIORITY_BEST_EFFORT, "")
 		if !dec.IsDrop() {
 			t.Errorf("expected best-effort to be shed when TPM exceeds 70%%")
 		}
@@ -364,7 +364,7 @@ func TestCascadeEngine_Evaluate(t *testing.T) {
 			},
 		}
 
-		dec := engine.Evaluate(snapshot, "my-proj", "us-central1", "gemini-2.5-pro", pb.Priority_PRIORITY_UNSPECIFIED, "")
+		dec := engine.Evaluate(snapshot, "my-proj", "us-central1", "gemini-2.5-pro", governor.Priority_PRIORITY_UNSPECIFIED, "")
 		if !dec.IsDrop() {
 			t.Errorf("expected unspecified priority to be shed when exceeding 70%%")
 		}

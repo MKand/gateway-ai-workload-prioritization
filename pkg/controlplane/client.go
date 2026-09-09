@@ -12,7 +12,7 @@ import (
 	"cloud.google.com/go/cloudquotas/apiv1/cloudquotaspb"
 	monitoring "cloud.google.com/go/monitoring/apiv3"
 	"cloud.google.com/go/monitoring/apiv3/v2/monitoringpb"
-	pb "github.com/MKand/gateway-ai-workload-prioritization/gen/go/governor/v1"
+	"github.com/MKand/gateway-ai-workload-prioritization/pkg/governor"
 	"google.golang.org/api/iterator"
 	"google.golang.org/api/option"
 	"google.golang.org/protobuf/types/known/durationpb"
@@ -71,14 +71,14 @@ func (mqc *RawModelQuota) GetKey() (string, error) {
 }
 
 type GCPClient struct {
-	projectLimits    map[string]*pb.ModelLimit
-	orgLimits        map[string]*pb.ModelLimit
+	projectLimits    map[string]*governor.ModelLimit
+	orgLimits        map[string]*governor.ModelLimit
 	quotaClient      QuotaRequestClient
 	monitoringClient UsageRequestClient
 	orgID            string
 }
 
-func NewGCPClient(ctx context.Context, orgID string, projectLimits, orgLimits map[string]*pb.ModelLimit,
+func NewGCPClient(ctx context.Context, orgID string, projectLimits, orgLimits map[string]*governor.ModelLimit,
 	quotaClient QuotaRequestClient, monitoringClient UsageRequestClient) (*GCPClient, error) {
 
 	if orgID == "" {
@@ -314,7 +314,7 @@ func (gqc *GCPClient) fetchQuotaInfo(ctx context.Context, projectID, quotaID str
 	return info, nil
 }
 
-func (gqc *GCPClient) resolveFallbackLimit(limits map[string]*pb.ModelLimit, project, region, model string) *pb.ModelLimit {
+func (gqc *GCPClient) resolveFallbackLimit(limits map[string]*governor.ModelLimit, project, region, model string) *governor.ModelLimit {
 	modelLower := strings.ToLower(model)
 	regionLower := strings.ToLower(region)
 	projectLower := strings.ToLower(project)
@@ -347,7 +347,7 @@ func (gqc *GCPClient) resolveFallbackLimit(limits map[string]*pb.ModelLimit, pro
 			return limit
 		}
 	}
-	return &pb.ModelLimit{MaxRpm: FallbackMaxRPM, MaxTpm: FallbackMaxTPM}
+	return &governor.ModelLimit{MaxRpm: FallbackMaxRPM, MaxTpm: FallbackMaxTPM}
 }
 
 func extractLimits(qi *cloudquotaspb.QuotaInfo, targetRegions, targetModels []string) map[string]int64 {
@@ -450,7 +450,7 @@ func (c *MockUsageRequestClient) makeUsageRequest(ctx context.Context, req *moni
 	return val, nil
 }
 
-func NewMockGCPClient(ctx context.Context, projectLimits, orgLimits map[string]*pb.ModelLimit) *GCPClient {
+func NewMockGCPClient(ctx context.Context, projectLimits, orgLimits map[string]*governor.ModelLimit) *GCPClient {
 	return &GCPClient{
 		orgID:            "mockorgid",
 		projectLimits:    projectLimits,

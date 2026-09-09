@@ -8,7 +8,7 @@ import (
 
 	"cloud.google.com/go/cloudquotas/apiv1/cloudquotaspb"
 	"cloud.google.com/go/monitoring/apiv3/v2/monitoringpb"
-	pb "github.com/MKand/gateway-ai-workload-prioritization/gen/go/governor/v1"
+	"github.com/MKand/gateway-ai-workload-prioritization/pkg/governor"
 )
 
 func TestExtractLimits(t *testing.T) {
@@ -102,15 +102,15 @@ func TestGCPQuotaClient_ResolveLimit(t *testing.T) {
 	gqc := &GCPClient{}
 	tests := []struct {
 		name    string
-		limits  map[string]*pb.ModelLimit
+		limits  map[string]*governor.ModelLimit
 		project string
 		region  string
 		model   string
-		want    *pb.ModelLimit
+		want    *governor.ModelLimit
 	}{
 		{
 			name: "exact_match_project_region_model",
-			limits: map[string]*pb.ModelLimit{
+			limits: map[string]*governor.ModelLimit{
 				"projecta/us-central1/modela": {
 					MaxRpm: 100,
 					MaxTpm: 10000,
@@ -123,7 +123,7 @@ func TestGCPQuotaClient_ResolveLimit(t *testing.T) {
 			project: "projecta",
 			region:  "us-central1",
 			model:   "modela",
-			want: &pb.ModelLimit{
+			want: &governor.ModelLimit{
 				MaxRpm: 100,
 				MaxTpm: 10000,
 			},
@@ -131,7 +131,7 @@ func TestGCPQuotaClient_ResolveLimit(t *testing.T) {
 		// Region/Model Match: Matches region/model when project is empty.
 		{
 			name: "exact_match_region_model_empty_project",
-			limits: map[string]*pb.ModelLimit{
+			limits: map[string]*governor.ModelLimit{
 				"us-central1/modela": {
 					MaxRpm: 100,
 					MaxTpm: 10000,
@@ -144,7 +144,7 @@ func TestGCPQuotaClient_ResolveLimit(t *testing.T) {
 			project: "",
 			region:  "us-central1",
 			model:   "modela",
-			want: &pb.ModelLimit{
+			want: &governor.ModelLimit{
 				MaxRpm: 100,
 				MaxTpm: 10000,
 			},
@@ -152,7 +152,7 @@ func TestGCPQuotaClient_ResolveLimit(t *testing.T) {
 		//Model Match: Matches model
 		{
 			name: "exact_match_model",
-			limits: map[string]*pb.ModelLimit{
+			limits: map[string]*governor.ModelLimit{
 				"modela": {
 					MaxRpm: 100,
 					MaxTpm: 10000,
@@ -165,7 +165,7 @@ func TestGCPQuotaClient_ResolveLimit(t *testing.T) {
 			project: "",
 			region:  "us-central1",
 			model:   "modela",
-			want: &pb.ModelLimit{
+			want: &governor.ModelLimit{
 				MaxRpm: 100,
 				MaxTpm: 10000,
 			},
@@ -173,7 +173,7 @@ func TestGCPQuotaClient_ResolveLimit(t *testing.T) {
 		// Substring Match: Matches a model family suffix.
 		{
 			name: "exact_match_model",
-			limits: map[string]*pb.ModelLimit{
+			limits: map[string]*governor.ModelLimit{
 				"flash-lite": {
 					MaxRpm: 100,
 					MaxTpm: 10000,
@@ -186,7 +186,7 @@ func TestGCPQuotaClient_ResolveLimit(t *testing.T) {
 			project: "abc",
 			region:  "us-central1",
 			model:   "modela-flash-lite",
-			want: &pb.ModelLimit{
+			want: &governor.ModelLimit{
 				MaxRpm: 100,
 				MaxTpm: 10000,
 			},
@@ -218,11 +218,11 @@ func Test_FetchMetrics(t *testing.T) {
 	// 1. Initialize client with default config limits (fallbacks)
 	gqc := NewMockGCPClient(
 		ctx,
-		map[string]*pb.ModelLimit{
+		map[string]*governor.ModelLimit{
 			"projecta/us-central1/model1": {MaxRpm: 100, MaxTpm: 5000},
 			"projectb/us-central1/model1": {MaxRpm: 100, MaxTpm: 5000},
 		},
-		map[string]*pb.ModelLimit{
+		map[string]*governor.ModelLimit{
 			"us-central1/model1": {MaxRpm: 500, MaxTpm: 25000},
 		},
 	)
@@ -368,7 +368,7 @@ func Test_FetchMetrics(t *testing.T) {
 
 func TestNewGCPClient_Validation(t *testing.T) {
 	ctx := context.Background()
-	dummyLimits := map[string]*pb.ModelLimit{}
+	dummyLimits := map[string]*governor.ModelLimit{}
 	dummyQuota := &MockQuotaRequestClient{}
 	dummyUsage := &MockUsageRequestClient{}
 
@@ -407,10 +407,10 @@ func TestRawModelQuota_GetKey_Errors(t *testing.T) {
 // Replace TestFetchMetrics_APIFailure with:
 func TestFetchMetrics_APIFailure(t *testing.T) {
 	ctx := context.Background()
-	projectLimits := map[string]*pb.ModelLimit{
+	projectLimits := map[string]*governor.ModelLimit{
 		"gemini-pro": {MaxRpm: 120, MaxTpm: 5000},
 	}
-	gqc := NewMockGCPClient(ctx, projectLimits, map[string]*pb.ModelLimit{})
+	gqc := NewMockGCPClient(ctx, projectLimits, map[string]*governor.ModelLimit{})
 
 	// Inject a hard API error into the Quota client
 	mockQuota := gqc.quotaClient.(*MockQuotaRequestClient)
