@@ -1,28 +1,15 @@
-package governorv1
+package governor
 
 import (
 	"errors"
 	"fmt"
 	"strings"
+
+	pb "github.com/MKand/gateway-ai-workload-prioritization/gen/go/governor/v1"
 )
 
-func (mqc *ModelQuota) GetKey() (string, error) {
-	if mqc.Region == "" || mqc.Model == "" {
-		return "", fmt.Errorf("need string value for region=%s and model=%s", mqc.Region, mqc.Model)
-	}
-	return fmt.Sprintf("%s/%s", strings.ToLower(mqc.Region), strings.ToLower(mqc.Model)), nil
-}
-
-func (d *Decision) IsDrop() bool {
-	return d.Drop
-}
-
-func (d *Decision) IsForward() bool {
-	return !d.Drop && d.ReplaceModel == "" && d.ReplaceRegion == ""
-}
-
 // GetOrgQuota returns the global Org-level quota for a region/model.
-func (qs *QuotaSnapshot) GetOrgQuota(region, model string) (*ModelQuota, error) {
+func GetOrgQuota(qs *pb.QuotaSnapshot, region, model string) (*pb.ModelQuota, error) {
 	if qs == nil || qs.OrgQuotas == nil {
 		return nil, errors.New("org quota data not available")
 	}
@@ -35,7 +22,7 @@ func (qs *QuotaSnapshot) GetOrgQuota(region, model string) (*ModelQuota, error) 
 }
 
 // GetProjectQuota returns the specific project-level quota.
-func (qs *QuotaSnapshot) GetProjectQuota(project, region, model string) (*ModelQuota, error) {
+func GetProjectQuota(qs *pb.QuotaSnapshot, project, region, model string) (*pb.ModelQuota, error) {
 	if qs == nil || qs.ProjectQuotas == nil {
 		return nil, errors.New("project quota data not available")
 	}

@@ -3,23 +3,9 @@ syntax = "proto3";
 package governor.v1;
 
 import "google/protobuf/timestamp.proto";
-import "google/protobuf/duration.proto";
 
 option go_package = "github.com/MKand/gateway-ai-workload-prioritization/gen/go/governor/v1;governorv1";
 
-// Priority represents the classification of incoming LLM traffic.
-enum Priority {
-  PRIORITY_UNSPECIFIED = 0;
-  PRIORITY_CRITICAL = 1;     // User-facing interactive chat, production workflows (protected)
-  PRIORITY_BEST_EFFORT = 2;  // Offline indexing, synthetic testing (shed early at >70%)
-  PRIORITY_CUSTOM = 3;       // Follows custom cascade DAG
-}
-
-// ModelLimit defines static or default configured limits for RPM and TPM.
-message ModelLimit {
-  int64 max_rpm = 1;
-  int64 max_tpm = 2;
-}
 
 // ModelQuota holds the real-time capacity and utilization state for a model in a region.
 message ModelQuota {
@@ -45,15 +31,6 @@ message QuotaSnapshot {
   map<string, ModelQuota> project_quotas = 2;
 
   google.protobuf.Timestamp last_synced_at = 3;
-}
-
-// Decision represents the outcome of a Data Plane routing / admission evaluation.
-message Decision {
-  bool drop = 1;                         // True if request must be shed with HTTP 429
-  string replace_model = 2;             // If set, rewrite target model in URL path
-  string replace_region = 3;            // If set, rewrite target region in URL/host
-  string reason = 4;                    // Diagnostic reason for metrics/logs
-  google.protobuf.Duration retry_after = 5; // Header value for HTTP 429
 }
 
 // ============================================================================
