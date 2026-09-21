@@ -94,11 +94,11 @@ Every cascade step requires an explicit `target_model` and `region`:
 custom_policies:
   quality_first:
     cascade:
-      - target_model: "gemini-1.5-pro"
+      - target_model: "gemini-3.0-pro"
         region: "us-central1"
-      - target_model: "gemini-1.5-flash"
+      - target_model: "gemini-3.5-flash"
         region: "us-central1"
-      - target_model: "gemini-1.5-flash"
+      - target_model: "gemini-3.5-flash"
         region: "us-east4"
 ```
 

@@ -29,26 +29,10 @@ type Config struct {
 type Priority int32
 
 const (
-	Priority_PRIORITY_UNSPECIFIED Priority = 0
-	Priority_PRIORITY_CRITICAL    Priority = 1 // User-facing interactive chat, production workflows (protected)
-	Priority_PRIORITY_BEST_EFFORT Priority = 2 // Offline indexing, synthetic testing (shed early at >70%)
-	Priority_PRIORITY_CUSTOM      Priority = 3 // Follows custom cascade DAG
-)
-
-// Enum value maps for Priority.
-var (
-	Priority_name = map[int32]string{
-		0: "PRIORITY_UNSPECIFIED",
-		1: "PRIORITY_CRITICAL",
-		2: "PRIORITY_BEST_EFFORT",
-		3: "PRIORITY_CUSTOM",
-	}
-	Priority_value = map[string]int32{
-		"PRIORITY_UNSPECIFIED": 0,
-		"PRIORITY_CRITICAL":    1,
-		"PRIORITY_BEST_EFFORT": 2,
-		"PRIORITY_CUSTOM":      3,
-	}
+	Priority_PRIORITY_UNSPECIFIED Priority = iota
+	Priority_PRIORITY_CRITICAL             //Unmodified
+	Priority_PRIORITY_BEST_EFFORT          // Offline indexing, synthetic testing (shed early at >70%)
+	Priority_PRIORITY_CUSTOM
 )
 
 type ModelLimit struct {

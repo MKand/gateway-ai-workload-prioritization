@@ -10,7 +10,7 @@ option go_package = "github.com/MKand/gateway-ai-workload-prioritization/gen/go/
 // ModelQuota holds the real-time capacity and utilization state for a model in a region.
 message ModelQuota {
   string project_id = 1;      // Empty for Org-level pooled quotas
-  string model = 2;           // e.g. "gemini-1.5-pro"
+  string model = 2;           // e.g. "gemini-3.0-pro"
   string region = 3;          // e.g. "us-central1"
   int64 max_tpm = 4;
   int64 max_rpm = 5;
@@ -24,7 +24,7 @@ message ModelQuota {
 
 // QuotaSnapshot represents the complete cluster-wide quota state at an instant in time.
 message QuotaSnapshot {
-  // OrgQuotas: key is "region/model" (e.g. "us-central1/gemini-1.5-pro")
+  // OrgQuotas: key is "region/model" (e.g. "us-central1/gemini-3.0-pro")
   map<string, ModelQuota> org_quotas = 1;
 
   // ProjectQuotas: key is "project/region/model"
