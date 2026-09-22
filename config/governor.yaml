@@ -1,7 +1,9 @@
 # config/governor.yaml
 
-# Leave project_ids empty to test host autodetection, or list explicit projects:
-project_ids: []
+org_id: "1234567890"
+
+project_ids:
+  - "my-gcp-project"
 
 regions:
   - "us-central1"

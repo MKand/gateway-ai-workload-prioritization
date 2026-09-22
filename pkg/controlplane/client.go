@@ -140,6 +140,19 @@ func NewGCPUsageRequestClient(ctx context.Context, opts ...option.ClientOption) 
 	}, err
 }
 
+func (c *GCPQuotaRequestClient) Close() error {
+	if c == nil || c.cloudQuotasClient == nil {
+		return nil
+	}
+	return c.cloudQuotasClient.Close()
+}
+
+func (c *GCPUsageRequestClient) Close() error {
+	if c == nil || c.monitoringMetricClient == nil {
+		return nil
+	}
+	return c.monitoringMetricClient.Close()
+}
 func (c *GCPUsageRequestClient) makeUsageRequest(ctx context.Context, req *monitoringpb.ListTimeSeriesRequest) (TimeSeriesIterator, error) {
 	if c.monitoringMetricClient == nil {
 		return nil, fmt.Errorf("cannot retreive metrics with a nil monitoring metric client")

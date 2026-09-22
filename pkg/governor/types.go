@@ -13,6 +13,7 @@ type PriorityPolicy interface {
 }
 
 type Config struct {
+	OrgId                   string                  `json:"orgId" yaml:"org_id"`
 	ProjectIDs              []string                `json:"projectIds" yaml:"project_ids"`
 	Regions                 []string                `json:"regions" yaml:"regions"`
 	Models                  []string                `json:"models" yaml:"models"`
