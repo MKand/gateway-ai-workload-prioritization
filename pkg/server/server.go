@@ -34,15 +34,16 @@ func (s *Server) GetQuotaSnapshot(ctx context.Context, req *pb.GetQuotaSnapshotR
 }
 
 func (s *Server) StreamQuotas(req *pb.StreamQuotasRequest, stream pb.QuotaDiscoveryService_StreamQuotasServer) error {
+	// Subscribe before reading the initial snapshot so a Save that lands in
+	// between is not lost.
+	ch, unsubscribe := s.store.Subscribe()
+	defer unsubscribe()
 
 	if initial, err := s.store.Get(stream.Context()); err == nil && initial != nil {
 		if err := stream.Send(initial); err != nil {
 			return err
 		}
 	}
-
-	ch, unsubscribe := s.store.Subscribe()
-	defer unsubscribe()
 
 	for {
 		select {
