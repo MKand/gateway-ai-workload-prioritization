@@ -5,9 +5,15 @@ org_id: "1234567890"
 project_ids:
   - "my-gcp-project"
 
+# Every region used as a cascade fallback below must be listed here, otherwise
+# its quota is never polled and config loading fails.
 regions:
   - "us-central1"
+  - "us-east1"
+  - "us-west1"
   - "europe-west1"
+  - "europe-west3"
+  - "europe-west4"
 
 models:
   - "gemini-3.5-flash"

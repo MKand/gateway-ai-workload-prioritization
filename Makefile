@@ -5,7 +5,7 @@ UNAME_S := $(shell uname -s)
 GOPATH := $(shell go env GOPATH 2>/dev/null || echo $(HOME)/go)
 export PATH := $(PATH):$(GOPATH)/bin:$(HOME)/go/bin
 
-.PHONY: default check-env check-os check-tools proto test test-race test-concurrency help
+.PHONY: default check-env check-os check-tools proto build test test-race test-concurrency e2e live-check run-controlplane run-dataplane run-envoy help
 
 # Default target when running just 'make' without arguments
 default:
@@ -108,6 +108,38 @@ test-concurrency: check-env
 	@echo "==> Running concurrency tests with race detection (10 iterations)..."
 	go test -race -run="Test.*Concurrency" -count=10 -v ./...
 
+e2e:
+	@echo "==> Running Envoy end-to-end test (requires Docker)..."
+	go test -tags e2e -count=1 -v ./test/e2e/...
+
+## ----------------------------------------------------------------------
+## BUILD & RUN
+## ----------------------------------------------------------------------
+CONFIG ?= config/governor.yaml
+ENVOY_IMAGE ?= envoyproxy/envoy:v1.34-latest
+
+build:
+	go build -o bin/controlplane ./cmd/controlplane
+	go build -o bin/dataplane ./cmd/dataplane
+
+# Poll real GCP quotas + usage once and print the snapshot (needs ADC credentials).
+live-check:
+	go run ./cmd/controlplane --config $(CONFIG) --once
+
+# Local runs use plaintext gRPC; pass CP_FLAGS="--tls-cert=... --tls-key=..." and
+# DP_FLAGS="--control-plane-ca=..." (and drop --insecure) for TLS.
+CP_FLAGS ?= --insecure
+DP_FLAGS ?= --insecure
+
+run-controlplane:
+	go run ./cmd/controlplane --config $(CONFIG) $(CP_FLAGS)
+
+run-dataplane:
+	go run ./cmd/dataplane --config $(CONFIG) $(DP_FLAGS)
+
+run-envoy:
+	docker run --rm --network host -v $(CURDIR)/deploy/envoy/envoy.yaml:/etc/envoy/envoy.yaml:ro $(ENVOY_IMAGE) -c /etc/envoy/envoy.yaml
+
 ## ----------------------------------------------------------------------
 ## HELP
 ## ----------------------------------------------------------------------
@@ -116,10 +148,13 @@ help:
 	@echo "Available targets:"
 	@echo "  make proto             - Run environment checks and generate Go code from proto definitions"
 	@echo "  make check-env         - Run all environment and prerequisite checks (OS, go, protoc, plugins)"
+	@echo "  make build             - Build bin/controlplane and bin/dataplane"
 	@echo "  make test              - Run standard unit tests"
 	@echo "  make test-race         - Run unit tests with Go race detector"
 	@echo "  make test-concurrency  - Run concurrency tests (10 iterations) with Go race detector"
+	@echo "  make e2e               - Run Envoy end-to-end test (Docker, fake GCP)"
+	@echo "  make live-check        - Poll real GCP quotas/usage once and print the snapshot (CONFIG=...)"
+	@echo "  make run-controlplane  - Run the control plane (CONFIG=..., CP_FLAGS=--insecure by default)"
+	@echo "  make run-dataplane     - Run the ext_proc data plane (CONFIG=..., DP_FLAGS=--insecure by default)"
+	@echo "  make run-envoy         - Run Envoy locally with deploy/envoy/envoy.yaml"
 	@echo "  make help              - Display this help message"
-	@echo "  make test              - Run standard unit tests"
-	@echo "  make test-race         - Run unit tests with Go race detector"
-	@echo "  make test-concurrency  - Run concurrency tests (10 iterations) with Go race detector"

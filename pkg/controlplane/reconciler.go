@@ -53,6 +53,12 @@ func (r *Reconciler) Start(ctx context.Context) error {
 	}
 }
 
+// ReconcileOnce runs a single fetch-and-store cycle. It is used by the
+// control plane's --once mode to validate quota/usage reads against real GCP.
+func (r *Reconciler) ReconcileOnce(ctx context.Context) error {
+	return r.reconcile(ctx)
+}
+
 func (r *Reconciler) reconcile(ctx context.Context) error {
 	rawQuotas, err := r.quotaClient.FetchMetrics(ctx, r.config.ProjectIDs, r.config.Regions, r.config.Models)
 	if err != nil {
