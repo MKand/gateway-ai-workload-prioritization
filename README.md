@@ -30,6 +30,7 @@ repo/
 ├── config/governor.yaml     # Example configuration
 ├── deploy/envoy/envoy.yaml  # Local Envoy with the ext_proc filter
 ├── test/e2e/                # Envoy + Docker end-to-end test with fake regional endpoints (build tag e2e)
+├── test/live/               # Live GCP integration tests: setup -> test -> teardown scripts (build tag live)
 └── docs/                    # Overview and architecture
 ```
 
@@ -41,6 +42,7 @@ repo/
 make test        # unit + in-process pipeline tests (config -> quotas -> headers)
 make e2e         # real Envoy in Docker, fake GCP metrics
 make live-check CONFIG=config/governor.yaml   # one real GCP poll, prints the snapshot
+make live-single PROJECT_A=... MODEL=...      # full live test, see test/live/README.md
 
 # Full stack (three terminals)
 make run-controlplane   # plaintext gRPC locally (--insecure)
