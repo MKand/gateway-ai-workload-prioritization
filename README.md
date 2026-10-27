@@ -71,6 +71,21 @@ Headers set: `x-governor-decision` (`forward`, `reroute`, `shed`, `bypass`), `x-
 
 ---
 
+## Test Status
+
+Last live run: 2026-10-27 (Argolis org, `gemini-2.5-flash-tts`, `us-central1` primary lowered to 10 RPM, `europe-west1` fallback).
+
+| Suite | Command | What it covers | Status |
+| :--- | :--- | :--- | :--- |
+| Unit + pipeline | `make test` | Config, quota parsing, decisions, header mutation, TLS, config -> gRPC -> ext_proc | Pass |
+| Docker e2e | `make e2e` | Real Envoy + fake regional endpoints: forward, shed, reroute, 404 | Pass |
+| Live, 1 project | `make live-single` | Real quota/usage reads, saturation, shed, reroute to real Vertex AI, fail-open | Pass (12/12) |
+| Live, 2 projects | `make live-dual` | Above + per-project isolation, org usage = A + B | Pass (14/14) |
+
+Known limits: current Gemini text models use Dynamic Shared Quota (no per-project limit to read); the governor reacts ~1.5-2 min after usage changes (Cloud Monitoring lag).
+
+---
+
 ## Requirements
 
 ### Local Development

@@ -174,7 +174,9 @@ func startEnvoy(t *testing.T, env testEnv) {
 	cfg, _ := filepath.Abs(filepath.Join(filepath.Dir(thisFile), "..", "..", "deploy", "envoy", "envoy.yaml"))
 	_ = exec.Command("docker", "rm", "-f", env.envoyContainer).Run()
 	if out, err := exec.Command("docker", "run", "-d", "--name", env.envoyContainer, "--network", "host",
-		"-v", cfg+":/etc/envoy/envoy.yaml:ro", envoyImage, "-c", "/etc/envoy/envoy.yaml", "-l", "warn").CombinedOutput(); err != nil {
+		"-v", cfg+":/etc/envoy/envoy.yaml:ro", envoyImage, "-c", "/etc/envoy/envoy.yaml", "-l", "warn",
+		// Access logs are flushed every 10s by default; flush every 500ms so the test can read them promptly.
+		"--file-flush-interval-msec", "500").CombinedOutput(); err != nil {
 		t.Fatalf("docker run envoy: %v\n%s", err, out)
 	}
 	t.Cleanup(func() { _ = exec.Command("docker", "rm", "-f", env.envoyContainer).Run() })
@@ -226,13 +228,15 @@ type result struct {
 	headers   http.Header
 }
 
+// accessLog is one Envoy JSON access log line. Envoy's json_format emits
+// missing values as null (decoded here as "") and numeric fields as numbers.
 type accessLog struct {
 	RequestID     string `json:"request_id"`
 	Authority     string `json:"authority"`
 	Path          string `json:"path"`
 	Decision      string `json:"decision"`
 	OriginalPath  string `json:"original_path"`
-	ResponseCode  string `json:"response_code"`
+	ResponseCode  int    `json:"response_code"`
 	ResponseFlags string `json:"response_flags"`
 	UpstreamHost  string `json:"upstream_host"`
 }
@@ -243,6 +247,20 @@ func newRequestID() string {
 	return "gqg-live-" + hex.EncodeToString(b)
 }
 
+// requestBody returns the smallest valid generateContent body for the model.
+// TTS models reject text-only output and need an audio response config.
+// GQG_REQUEST_BODY overrides both.
+func requestBody(model string) string {
+	if b := os.Getenv("GQG_REQUEST_BODY"); b != "" {
+		return b
+	}
+	if strings.HasSuffix(model, "-tts") {
+		return `{"contents":[{"role":"user","parts":[{"text":"hi"}]}],"generationConfig":{"responseModalities":["AUDIO"],` +
+			`"speechConfig":{"voiceConfig":{"prebuiltVoiceConfig":{"voiceName":"Kore"}}}}}`
+	}
+	return `{"contents":[{"role":"user","parts":[{"text":"hi"}]}],"generationConfig":{"maxOutputTokens":1}}`
+}
+
 func modelPath(project, region, model string) string {
 	return fmt.Sprintf("/v1/projects/%s/locations/%s/publishers/google/models/%s:generateContent", project, region, model)
 }
@@ -250,8 +268,7 @@ func modelPath(project, region, model string) string {
 // do issues a minimal generateContent call through Envoy. Safe to call from
 // any goroutine (never calls t.Fatal).
 func (s *stack) do(project, region, priority, policy string) (result, error) {
-	body := `{"contents":[{"role":"user","parts":[{"text":"hi"}]}],"generationConfig":{"maxOutputTokens":1}}`
-	req, err := http.NewRequest(http.MethodPost, envoyURL+modelPath(project, region, s.env.model), strings.NewReader(body))
+	req, err := http.NewRequest(http.MethodPost, envoyURL+modelPath(project, region, s.env.model), strings.NewReader(requestBody(s.env.model)))
 	if err != nil {
 		return result{}, err
 	}
@@ -286,6 +303,8 @@ func (s *stack) send(t *testing.T, project, region, priority, policy string) res
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Logf("evidence: %s %s priority=%q policy=%q -> HTTP %d decision=%q retry-after=%q",
+		project, region, priority, policy, r.status, r.headers.Get("X-Governor-Decision"), r.headers.Get("Retry-After"))
 	return r
 }
 
@@ -293,7 +312,7 @@ func (s *stack) send(t *testing.T, project, region, priority, policy string) res
 func (s *stack) logFor(t *testing.T, id string) accessLog {
 	t.Helper()
 	var found accessLog
-	waitFor(t, "access log for "+id, 10*time.Second, 200*time.Millisecond, func() (bool, string) {
+	waitFor(t, "access log for "+id, 30*time.Second, 200*time.Millisecond, func() (bool, string) {
 		out, _ := exec.Command("docker", "logs", s.env.envoyContainer).Output()
 		sc := bufio.NewScanner(bytes.NewReader(out))
 		sc.Buffer(make([]byte, 1<<20), 1<<20)
@@ -302,7 +321,11 @@ func (s *stack) logFor(t *testing.T, id string) accessLog {
 			if !bytes.Contains(line, []byte(id)) {
 				continue
 			}
-			if err := json.Unmarshal(line, &found); err == nil && found.RequestID == id {
+			if err := json.Unmarshal(line, &found); err != nil {
+				return false, "unparseable log line: " + err.Error()
+			}
+			if found.RequestID == id {
+				t.Logf("evidence: envoy access log: %s", line)
 				return true, ""
 			}
 		}
@@ -321,6 +344,9 @@ func waitFor(t *testing.T, what string, timeout, every time.Duration, cond func(
 	for {
 		ok, detail := cond()
 		if ok {
+			if detail != "" {
+				t.Logf("evidence: %s: %s (after %v)", what, detail, timeout-time.Until(deadline))
+			}
 			return
 		}
 		if time.Now().After(deadline) {
@@ -393,34 +419,39 @@ func TestLive(t *testing.T) {
 	}
 
 	// ---- L3: live reads -------------------------------------------------
-	t.Run("R1 reconcile against real GCP", func(t *testing.T) {
+	readsOK := t.Run("R1 reconcile against real GCP", func(t *testing.T) {
 		waitFor(t, "first successful reconcile", 2*time.Minute, pollEvery, func() (bool, string) {
-			return s.refresh(t, ctx) != nil, "reconcile failed"
+			if s.refresh(t, ctx) == nil {
+				return false, "reconcile failed"
+			}
+			return true, "ok"
 		})
 	})
 
-	t.Run("R2 lowered limit visible on project A", func(t *testing.T) {
+	readsOK = t.Run("R2 lowered limit visible on project A", func(t *testing.T) {
 		waitFor(t, "lowered quota to apply", quotaApplyTimeout, pollEvery, func() (bool, string) {
 			q := s.projectQuota(s.refresh(t, ctx), env.projectA, env.primary)
 			return q != nil && q.MaxRpm == env.lowered, describe(q)
 		})
-	})
+	}) && readsOK
 
-	t.Run("R3 every project/region has real limits", func(t *testing.T) {
+	readsOK = t.Run("R3 every project/region has real limits", func(t *testing.T) {
 		snap := s.refresh(t, ctx)
 		for _, p := range projects {
 			for _, r := range []string{env.primary, env.fallback} {
 				q := s.projectQuota(snap, p, r)
 				if q == nil || q.MaxRpm <= 0 {
 					t.Errorf("%s/%s: %s", p, r, describe(q))
+				} else if q.MaxRpm == controlplane.FallbackMaxRPM {
+					t.Errorf("%s/%s: max_rpm equals the built-in fallback (%d); the real limit was not read from Cloud Quotas", p, r, q.MaxRpm)
 				}
 			}
 		}
 		if q := s.projectQuota(snap, env.projectA, env.fallback); q != nil && q.MaxRpm <= env.lowered {
 			t.Errorf("fallback region limit should be above the lowered primary limit: %s", describe(q))
 		}
-	})
-	if t.Failed() {
+	}) && readsOK
+	if !readsOK {
 		t.Fatal("live reads failed; skipping traffic scenarios")
 	}
 
@@ -467,7 +498,7 @@ func TestLive(t *testing.T) {
 	}
 	defer stopLoad()
 
-	t.Run("F3 saturate project A primary", func(t *testing.T) {
+	saturated := t.Run("F3 saturate project A primary", func(t *testing.T) {
 		waitFor(t, "project A primary utilization >= 95%", saturateTimeout, pollEvery, func() (bool, string) {
 			q := s.projectQuota(s.refresh(t, ctx), env.projectA, env.primary)
 			return q != nil && governor.IsSaturated(q), describe(q)
@@ -477,7 +508,7 @@ func TestLive(t *testing.T) {
 			return q != nil && governor.IsSaturated(q), describe(q)
 		})
 	})
-	if t.Failed() {
+	if !saturated {
 		t.Fatal("could not saturate the primary region; skipping saturated scenarios")
 	}
 
@@ -489,7 +520,7 @@ func TestLive(t *testing.T) {
 		if r.headers.Get("Retry-After") == "" {
 			t.Error("missing Retry-After")
 		}
-		check(t, l.UpstreamHost, "-", "upstream host (no upstream call expected)")
+		check(t, l.UpstreamHost, "", "upstream host (no upstream call expected)")
 	})
 
 	t.Run("F5 custom rerouted to fallback region", func(t *testing.T) {
@@ -558,6 +589,6 @@ func TestLive(t *testing.T) {
 		l := s.logFor(t, r.requestID)
 		check(t, r.status, http.StatusOK, "status")
 		check(t, l.Authority, host(env.fallback), "dialed host")
-		check(t, l.Decision, "-", "decision (governor bypassed)")
+		check(t, l.Decision, "", "decision (governor bypassed)")
 	})
 }
