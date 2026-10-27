@@ -224,16 +224,8 @@ func (gqc *GCPClient) FetchMetrics(ctx context.Context, projectIDs []string, reg
 				key := fmt.Sprintf("%s/%s", strings.ToLower(r), strings.ToLower(m))
 
 				var maxRpm, maxTpm, rpmUsage, tpmUsage int64
-				if limit, exists := data.rpmLimits[key]; exists && limit > 0 {
-					maxRpm = limit
-				} else {
-					maxRpm = gqc.resolveFallbackLimit(gqc.projectLimits, p, r, m).MaxRpm
-				}
-				if limit, exists := data.tpmLimits[key]; exists && limit > 0 {
-					maxTpm = limit
-				} else {
-					maxTpm = gqc.resolveFallbackLimit(gqc.projectLimits, p, r, m).MaxTpm
-				}
+				maxRpm = resolveLimit(data.rpmLimits, key, gqc.resolveFallbackLimit(gqc.projectLimits, p, r, m).MaxRpm)
+				maxTpm = resolveLimit(data.tpmLimits, key, gqc.resolveFallbackLimit(gqc.projectLimits, p, r, m).MaxTpm)
 
 				if usage, exists := data.rpmUsage[key]; exists {
 					rpmUsage = usage
@@ -264,6 +256,22 @@ func (gqc *GCPClient) FetchMetrics(ctx context.Context, projectIDs []string, reg
 		}
 	}
 	return resp, nil
+}
+
+// resolveLimit returns the limit reported by Cloud Quotas for key. An
+// unlimited quota (-1) is returned as 0, which the rest of the system treats
+// as "no limit" (utilization 0, never saturated). Missing or zero values fall
+// back to the configured default.
+func resolveLimit(limits map[string]int64, key string, fallback int64) int64 {
+	limit, exists := limits[key]
+	switch {
+	case exists && limit == UnlimitedQuota:
+		return 0
+	case exists && limit > 0:
+		return limit
+	default:
+		return fallback
+	}
 }
 
 func (gqc *GCPClient) fetchUsageInfo(ctx context.Context, projectID, metricType string) (map[string]int64, error) {
@@ -363,50 +371,66 @@ func (gqc *GCPClient) resolveFallbackLimit(limits map[string]*governor.ModelLimi
 	return &governor.ModelLimit{MaxRpm: FallbackMaxRPM, MaxTpm: FallbackMaxTPM}
 }
 
+// UnlimitedQuota is the value Cloud Quotas uses for "no limit". extractLimits
+// preserves it so callers can tell "unlimited" apart from "unknown".
+const UnlimitedQuota int64 = -1
+
+// extractLimits maps each targeted "region/model" key to its limit.
+//
+// A QuotaInfo mixes entries of different specificity, e.g. a region-wide
+// default ({region}) and a model override ({region, base_model}). The most
+// specific matching entry wins regardless of order:
+// region+model > model-only > region-only > global.
+// Entries without a value carry no information and are skipped.
 func extractLimits(qi *cloudquotaspb.QuotaInfo, targetRegions, targetModels []string) map[string]int64 {
 	resp := make(map[string]int64)
+	specificity := make(map[string]int)
 	if qi == nil {
 		return resp
 	}
+
+	contains := func(list []string, s string) bool {
+		for _, item := range list {
+			if strings.EqualFold(item, s) {
+				return true
+			}
+		}
+		return false
+	}
+
 	for _, info := range qi.GetDimensionsInfos() {
-		dims := info.GetDimensions()
-		if dims == nil {
-			continue
+		if info.GetDetails() == nil {
+			continue // no value reported for this dimension set
 		}
-		region, hasRegion := dims["region"]
-		model, hasModel := dims["base_model"]
 		value := info.GetDetails().GetValue()
+		dims := info.GetDimensions()
+		region, model := dims["region"], dims["base_model"]
 
-		contains := func(list []string, s string) bool {
-			for _, item := range list {
-				if strings.EqualFold(item, s) {
-					return true
-				}
+		score := 0
+		matchedRegions := targetRegions
+		if region != "" {
+			if !contains(targetRegions, region) {
+				continue
 			}
-			return false
+			matchedRegions = []string{region}
+			score++
 		}
-
-		var matchedRegions []string
-		if hasRegion && region != "" {
-			if contains(targetRegions, region) {
-				matchedRegions = []string{region}
+		matchedModels := targetModels
+		if model != "" {
+			if !contains(targetModels, model) {
+				continue
 			}
-		} else {
-			matchedRegions = targetRegions
-		}
-
-		var matchedModels []string
-		if hasModel && model != "" {
-			if contains(targetModels, model) {
-				matchedModels = []string{model}
-			}
-		} else {
-			matchedModels = targetModels
+			matchedModels = []string{model}
+			score += 2
 		}
 
 		for _, r := range matchedRegions {
 			for _, m := range matchedModels {
 				key := fmt.Sprintf("%s/%s", strings.ToLower(r), strings.ToLower(m))
+				if prev, seen := specificity[key]; seen && prev > score {
+					continue
+				}
+				specificity[key] = score
 				resp[key] = value
 			}
 		}

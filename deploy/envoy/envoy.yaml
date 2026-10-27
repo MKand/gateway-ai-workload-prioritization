@@ -23,6 +23,24 @@ static_resources:
               typed_config:
                 "@type": type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager
                 stat_prefix: ingress
+                # One JSON line per request on stdout. :authority is logged after
+                # the governor's mutation, i.e. the host that was actually dialed.
+                access_log:
+                  - name: envoy.access_loggers.stdout
+                    typed_config:
+                      "@type": type.googleapis.com/envoy.extensions.access_loggers.stream.v3.StdoutAccessLog
+                      log_format:
+                        json_format:
+                          request_id: "%REQ(X-REQUEST-ID)%"
+                          authority: "%REQ(:AUTHORITY)%"
+                          path: "%REQ(:PATH)%"
+                          priority: "%REQ(X-REQUEST-PRIORITY)%"
+                          decision: "%REQ(X-GOVERNOR-DECISION)%"
+                          original_path: "%REQ(X-GOVERNOR-ORIGINAL-PATH)%"
+                          response_code: "%RESPONSE_CODE%"
+                          response_flags: "%RESPONSE_FLAGS%"
+                          upstream_host: "%UPSTREAM_HOST%"
+                          duration_ms: "%DURATION%"
                 route_config:
                   virtual_hosts:
                     # Only Vertex AI regional endpoints are proxied. Anything
