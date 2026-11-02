@@ -5,7 +5,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
-	"log"
+	"log/slog"
 	"net"
 	"os"
 	"os/signal"
@@ -14,6 +14,7 @@ import (
 	pb "github.com/MKand/gateway-ai-workload-prioritization/gen/go/governor/v1"
 	"github.com/MKand/gateway-ai-workload-prioritization/pkg/dataplane"
 	"github.com/MKand/gateway-ai-workload-prioritization/pkg/governor"
+	"github.com/MKand/gateway-ai-workload-prioritization/pkg/logging"
 	"github.com/MKand/gateway-ai-workload-prioritization/pkg/transport"
 	extprocv3 "github.com/envoyproxy/go-control-plane/envoy/service/ext_proc/v3"
 	"google.golang.org/grpc"
@@ -26,39 +27,53 @@ func main() {
 	cpCA := flag.String("control-plane-ca", "", "PEM CA bundle used to verify the control plane's TLS certificate (default: system roots)")
 	cpServerName := flag.String("control-plane-server-name", "", "override the server name checked in the control plane's TLS certificate")
 	allowInsecure := flag.Bool("insecure", false, "connect to the control plane without TLS (local development only)")
+	logLevel := flag.String("log-level", "info", "structured log level (debug, info, warn, error)")
+	logFormat := flag.String("log-format", "json", "structured log format (json, text)")
 	flag.Parse()
+
+	logger, err := logging.New(*logFormat, *logLevel, os.Stderr)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "invalid logging configuration: %v\n", err)
+		os.Exit(1)
+	}
+	slog.SetDefault(logger)
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
 	cfg, err := governor.LoadConfig(*configPath)
 	if err != nil {
-		log.Fatalf("Failed to load config from %s: %v", *configPath, err)
+		logger.Error("failed to load config", "path", *configPath, "err", err)
+		os.Exit(1)
 	}
 
 	engine, err := governor.NewCascadeEngineFromConfig(cfg)
 	if err != nil {
-		log.Fatalf("Failed to build cascade engine: %v", err)
+		logger.Error("failed to build cascade engine", "err", err)
+		os.Exit(1)
 	}
 
 	creds, err := transport.ClientCredentials(*cpCA, *cpServerName, *allowInsecure)
 	if err != nil {
-		log.Fatalf("Invalid control plane TLS settings: %v", err)
+		logger.Error("invalid control plane TLS settings", "err", err)
+		os.Exit(1)
 	}
 	if *allowInsecure {
-		log.Printf("WARNING: connecting to control plane %s without TLS", *controlPlane)
+		logger.Warn("connecting to control plane without TLS; intended for local development only", "control_plane", *controlPlane)
 	}
 	conn, err := grpc.NewClient(*controlPlane, grpc.WithTransportCredentials(creds))
 	if err != nil {
-		log.Fatalf("Failed to create control plane client for %s: %v", *controlPlane, err)
+		logger.Error("failed to create control plane client", "control_plane", *controlPlane, "err", err)
+		os.Exit(1)
 	}
 	defer conn.Close()
 
 	hostname, _ := os.Hostname()
 	cache := dataplane.NewSnapshotCache()
+	cache.SetLogger(logger)
 	go func() {
 		if err := cache.Run(ctx, pb.NewQuotaDiscoveryServiceClient(conn), hostname); err != nil && !errors.Is(err, context.Canceled) {
-			log.Printf("Quota stream stopped: %v", err)
+			logger.Error("quota stream stopped", "err", err)
 		}
 	}()
 
@@ -66,28 +81,34 @@ func main() {
 	// allowance by demand; the PID guards against two replicas on one host.
 	replicaID := fmt.Sprintf("%s-%d", hostname, os.Getpid())
 	reporter := dataplane.NewUsageReporter(pb.NewQuotaDiscoveryServiceClient(conn), engine.Limiter(), replicaID, 0)
+	reporter.SetLogger(logger)
 	go func() {
 		if err := reporter.Run(ctx); err != nil && !errors.Is(err, context.Canceled) {
-			log.Printf("Usage reporter stopped: %v", err)
+			logger.Error("usage reporter stopped", "err", err)
 		}
 	}()
 
 	lis, err := net.Listen("tcp", fmt.Sprintf(":%d", *port))
 	if err != nil {
-		log.Fatalf("Failed to listen on port %d: %v", *port, err)
+		logger.Error("failed to listen", "port", *port, "err", err)
+		os.Exit(1)
 	}
 
+	extProcSrv := dataplane.NewExtProcServer(dataplane.NewEvaluator(cache, engine).WithDefaultTokens(cfg.RequestTokens()))
+	extProcSrv.SetLogger(logger)
+
 	grpcServer := grpc.NewServer()
-	extprocv3.RegisterExternalProcessorServer(grpcServer, dataplane.NewExtProcServer(dataplane.NewEvaluator(cache, engine).WithDefaultTokens(cfg.RequestTokens())))
+	extprocv3.RegisterExternalProcessorServer(grpcServer, extProcSrv)
 
 	go func() {
 		<-ctx.Done()
-		log.Println("Shutdown signal received, stopping Data Plane ext_proc server...")
+		logger.Info("shutdown signal received; stopping data plane ext_proc server")
 		grpcServer.GracefulStop()
 	}()
 
-	log.Printf("Gemini Quota Governor Data Plane (ext_proc) listening on port %d (control plane: %s)...", *port, *controlPlane)
+	logger.Info("data plane ext_proc listening", "port", *port, "control_plane", *controlPlane)
 	if err := grpcServer.Serve(lis); err != nil {
-		log.Fatalf("Failed to serve: %v", err)
+		logger.Error("gRPC server failed", "err", err)
+		os.Exit(1)
 	}
 }

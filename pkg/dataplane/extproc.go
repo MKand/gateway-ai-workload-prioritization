@@ -1,8 +1,10 @@
 package dataplane
 
 import (
+	"context"
 	"errors"
 	"io"
+	"log/slog"
 	"sort"
 	"strings"
 
@@ -18,6 +20,7 @@ import (
 type ExtProcServer struct {
 	extprocv3.UnimplementedExternalProcessorServer
 	evaluator *Evaluator
+	logger    *slog.Logger
 }
 
 // NewExtProcServer wraps an Evaluator as an Envoy ext_proc server.
@@ -25,8 +28,21 @@ func NewExtProcServer(e *Evaluator) *ExtProcServer {
 	return &ExtProcServer{evaluator: e}
 }
 
+// SetLogger overrides the logger used by ExtProcServer. Passing nil restores slog.Default().
+func (s *ExtProcServer) SetLogger(logger *slog.Logger) {
+	s.logger = logger
+}
+
+func (s *ExtProcServer) log() *slog.Logger {
+	if s.logger != nil {
+		return s.logger
+	}
+	return slog.Default()
+}
+
 // Process handles one HTTP stream from Envoy.
 func (s *ExtProcServer) Process(stream extprocv3.ExternalProcessor_ProcessServer) error {
+	ctx := stream.Context()
 	for {
 		req, err := stream.Recv()
 		if errors.Is(err, io.EOF) {
@@ -36,13 +52,14 @@ func (s *ExtProcServer) Process(stream extprocv3.ExternalProcessor_ProcessServer
 			if status.Code(err) == codes.Canceled {
 				return nil
 			}
+			s.log().ErrorContext(ctx, "ext_proc stream receive failed", "err", err)
 			return err
 		}
 
 		var resp *extprocv3.ProcessingResponse
 		switch r := req.Request.(type) {
 		case *extprocv3.ProcessingRequest_RequestHeaders:
-			resp = s.handleRequestHeaders(r.RequestHeaders)
+			resp = s.handleRequestHeaders(ctx, r.RequestHeaders)
 		case *extprocv3.ProcessingRequest_RequestBody:
 			resp = &extprocv3.ProcessingResponse{Response: &extprocv3.ProcessingResponse_RequestBody{RequestBody: &extprocv3.BodyResponse{}}}
 		case *extprocv3.ProcessingRequest_RequestTrailers:
@@ -58,15 +75,26 @@ func (s *ExtProcServer) Process(stream extprocv3.ExternalProcessor_ProcessServer
 		}
 
 		if err := stream.Send(resp); err != nil {
+			s.log().ErrorContext(ctx, "ext_proc stream send failed", "err", err)
 			return err
 		}
 	}
 }
 
-func (s *ExtProcServer) handleRequestHeaders(h *extprocv3.HttpHeaders) *extprocv3.ProcessingResponse {
-	res := s.evaluator.Evaluate(headerMap(h))
+func (s *ExtProcServer) handleRequestHeaders(ctx context.Context, h *extprocv3.HttpHeaders) *extprocv3.ProcessingResponse {
+	headers := headerMap(h)
+	res := s.evaluator.Evaluate(headers)
+	logger := s.log()
 
 	if res.Shed {
+		logger.WarnContext(ctx, "request shed by governor",
+			"decision", res.Decision,
+			"priority", headers[HeaderPriority],
+			"path", headers[HeaderPath],
+			"authority", headers[HeaderAuthority],
+			"retry_after_seconds", res.RetryAfterSeconds,
+			"reason", res.SetHeaders[HeaderReason],
+		)
 		return &extprocv3.ProcessingResponse{
 			Response: &extprocv3.ProcessingResponse_ImmediateResponse{
 				ImmediateResponse: &extprocv3.ImmediateResponse{
@@ -77,6 +105,26 @@ func (s *ExtProcServer) handleRequestHeaders(h *extprocv3.HttpHeaders) *extprocv
 				},
 			},
 		}
+	}
+
+	if res.RouteChanged {
+		logger.WarnContext(ctx, "request rerouted by governor",
+			"decision", res.Decision,
+			"priority", headers[HeaderPriority],
+			"policy", headers[HeaderPolicy],
+			"original_path", res.SetHeaders[HeaderOriginalPath],
+			"target_model", res.SetHeaders[HeaderTargetModel],
+			"target_region", res.SetHeaders[HeaderTargetRegion],
+			"reason", res.SetHeaders[HeaderReason],
+		)
+	} else if logger.Enabled(ctx, slog.LevelDebug) {
+		logger.DebugContext(ctx, "request evaluated by governor",
+			"decision", res.Decision,
+			"priority", headers[HeaderPriority],
+			"path", headers[HeaderPath],
+			"authority", headers[HeaderAuthority],
+			"reason", res.SetHeaders[HeaderReason],
+		)
 	}
 
 	return &extprocv3.ProcessingResponse{

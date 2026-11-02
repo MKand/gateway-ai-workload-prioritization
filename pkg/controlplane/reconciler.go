@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 	"time"
 
@@ -16,6 +17,19 @@ type Reconciler struct {
 	config        *governor.Config
 	quotaClient   MetricsClient
 	snapshotStore SnapshotStore
+	logger        *slog.Logger
+}
+
+// SetLogger overrides the logger used by Reconciler. Passing nil restores slog.Default().
+func (r *Reconciler) SetLogger(logger *slog.Logger) {
+	r.logger = logger
+}
+
+func (r *Reconciler) log() *slog.Logger {
+	if r.logger != nil {
+		return r.logger
+	}
+	return slog.Default()
 }
 
 func NewReconciler(config *governor.Config, client MetricsClient, store SnapshotStore) (*Reconciler, error) {
@@ -38,7 +52,7 @@ func (r *Reconciler) Start(ctx context.Context) error {
 	defer ticker.Stop()
 
 	if err := r.reconcile(ctx); err != nil {
-		fmt.Printf("Error when starting up reconciler: %s", err.Error())
+		r.log().ErrorContext(ctx, "initial quota reconciliation failed", "err", err)
 	}
 
 	for {
@@ -47,7 +61,7 @@ func (r *Reconciler) Start(ctx context.Context) error {
 			return ctx.Err()
 		case <-ticker.C:
 			if err := r.reconcile(ctx); err != nil {
-				fmt.Printf("Error when running reconcile loop: %s", err.Error())
+				r.log().ErrorContext(ctx, "quota reconciliation failed", "err", err)
 			}
 		}
 	}
@@ -128,7 +142,14 @@ func (r *Reconciler) reconcile(ctx context.Context) error {
 		LastSyncedAt:  timestamppb.Now(),
 	}
 
-	return r.snapshotStore.Save(ctx, snapshot)
+	if err := r.snapshotStore.Save(ctx, snapshot); err != nil {
+		return err
+	}
+	r.log().DebugContext(ctx, "quota snapshot saved",
+		"org_quotas", len(orgQuotas),
+		"project_quotas", len(projectQuotas),
+	)
+	return nil
 }
 
 // computeHeadroomMetric calculates usable headroom and utilization ratio for a quota counter.
