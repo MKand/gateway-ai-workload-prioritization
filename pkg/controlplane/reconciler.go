@@ -4,6 +4,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
+	"math/rand/v2"
+	"os"
 	"strings"
 	"time"
 
@@ -12,13 +15,55 @@ import (
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
-type Reconciler struct {
-	config        *governor.Config
-	quotaClient   MetricsClient
-	snapshotStore SnapshotStore
+const (
+	defaultJitterFraction       = 0.10
+	defaultMaxBackoffMultiplier = 8
+	maxBackoffShift             = 6
+)
+
+// ReconcilerOption configures optional Reconciler polling and backoff behavior.
+type ReconcilerOption func(*Reconciler)
+
+// WithJitterFraction sets the polling jitter fraction in [0.0, 1.0].
+// Steady-state intervals vary within [1-f, 1+f] of PollInterval, and backoff
+// delays vary within [1-f, 1.0] of the capped exponential delay.
+func WithJitterFraction(fraction float64) ReconcilerOption {
+	return func(r *Reconciler) {
+		r.jitterFraction = fraction
+	}
 }
 
-func NewReconciler(config *governor.Config, client MetricsClient, store SnapshotStore) (*Reconciler, error) {
+// WithMaxBackoff sets the upper bound on exponential backoff between failed
+// reconciliation attempts. When unset or zero, defaults to 8 * PollInterval.
+func WithMaxBackoff(d time.Duration) ReconcilerOption {
+	return func(r *Reconciler) {
+		r.maxBackoff = d
+		r.hasCustomMaxBackoff = true
+	}
+}
+
+// WithStartupJitter controls whether Start waits a random initial delay in
+// [0, jitterFraction * PollInterval) before the first poll so replicas
+// booting simultaneously do not call GCP APIs on the same millisecond.
+func WithStartupJitter(enabled bool) ReconcilerOption {
+	return func(r *Reconciler) {
+		r.startupJitter = enabled
+	}
+}
+
+type Reconciler struct {
+	config              *governor.Config
+	quotaClient         MetricsClient
+	snapshotStore       SnapshotStore
+	jitterFraction      float64
+	maxBackoff          time.Duration
+	hasCustomMaxBackoff bool
+	startupJitter       bool
+	sleepFn             func(context.Context, time.Duration) error
+	randFloat64         func() float64
+}
+
+func NewReconciler(config *governor.Config, client MetricsClient, store SnapshotStore, opts ...ReconcilerOption) (*Reconciler, error) {
 	if config == nil {
 		return nil, errors.New("config cannot be nil")
 	}
@@ -28,28 +73,103 @@ func NewReconciler(config *governor.Config, client MetricsClient, store Snapshot
 	if store == nil {
 		return nil, errors.New("snapshot store cannot be nil")
 	}
-	return &Reconciler{
-		config: config, quotaClient: client, snapshotStore: store,
-	}, nil
+	r := &Reconciler{
+		config:         config,
+		quotaClient:    client,
+		snapshotStore:  store,
+		jitterFraction: defaultJitterFraction,
+		startupJitter:  true,
+		sleepFn:        sleepWithContext,
+		randFloat64:    rand.Float64,
+	}
+	for _, opt := range opts {
+		if opt != nil {
+			opt(r)
+		}
+	}
+	if math.IsNaN(r.jitterFraction) || math.IsInf(r.jitterFraction, 0) || r.jitterFraction < 0 || r.jitterFraction > 1.0 {
+		return nil, fmt.Errorf("jitter fraction must be in [0.0, 1.0], got %v", r.jitterFraction)
+	}
+	if r.hasCustomMaxBackoff && r.maxBackoff < 0 {
+		return nil, fmt.Errorf("max backoff cannot be negative, got %v", r.maxBackoff)
+	}
+	return r, nil
 }
 
 func (r *Reconciler) Start(ctx context.Context) error {
-	ticker := time.NewTicker(r.config.PollInterval)
-	defer ticker.Stop()
-
-	if err := r.reconcile(ctx); err != nil {
-		fmt.Printf("Error when starting up reconciler: %s", err.Error())
-	}
-
-	for {
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-ticker.C:
-			if err := r.reconcile(ctx); err != nil {
-				fmt.Printf("Error when running reconcile loop: %s", err.Error())
+	base := r.pollInterval()
+	if r.startupJitter && r.jitterFraction > 0 {
+		startupDelay := time.Duration(float64(base) * r.jitterFraction * r.randFloat64())
+		if startupDelay > 0 {
+			if err := r.sleepFn(ctx, startupDelay); err != nil {
+				return err
 			}
 		}
+	}
+
+	consecutiveFailures := 0
+	for {
+		if err := r.reconcile(ctx); err != nil {
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
+			consecutiveFailures++
+			fmt.Fprintf(os.Stderr, "reconciler poll failed (attempt %d): %v\n", consecutiveFailures, err)
+		} else {
+			consecutiveFailures = 0
+		}
+
+		if err := r.sleepFn(ctx, r.nextDelay(consecutiveFailures)); err != nil {
+			return err
+		}
+	}
+}
+
+func (r *Reconciler) pollInterval() time.Duration {
+	if r.config != nil && r.config.PollInterval > 0 {
+		return r.config.PollInterval
+	}
+	return governor.MinPollInterval
+}
+
+func (r *Reconciler) nextDelay(consecutiveFailures int) time.Duration {
+	base := r.pollInterval()
+	if consecutiveFailures <= 0 {
+		multiplier := 1.0 + r.jitterFraction*(2.0*r.randFloat64()-1.0)
+		return time.Duration(float64(base) * multiplier)
+	}
+
+	maxDelay := r.maxBackoff
+	if !r.hasCustomMaxBackoff || maxDelay <= 0 {
+		maxDelay = defaultMaxBackoffMultiplier * base
+	}
+	if maxDelay < base {
+		maxDelay = base
+	}
+
+	shift := consecutiveFailures
+	if shift > maxBackoffShift {
+		shift = maxBackoffShift
+	}
+	capped := base << shift
+	if capped <= 0 || capped > maxDelay {
+		capped = maxDelay
+	}
+	multiplier := 1.0 - r.jitterFraction*r.randFloat64()
+	return time.Duration(float64(capped) * multiplier)
+}
+
+func sleepWithContext(ctx context.Context, d time.Duration) error {
+	if d <= 0 {
+		return ctx.Err()
+	}
+	timer := time.NewTimer(d)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
 	}
 }
 
