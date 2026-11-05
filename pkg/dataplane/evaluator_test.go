@@ -235,3 +235,26 @@ func contains(list []string, v string) bool {
 	}
 	return false
 }
+
+func TestEstimateTokens(t *testing.T) {
+	tests := []struct {
+		name    string
+		headers map[string]string
+		want    int64
+	}{
+		{"no hints uses default", map[string]string{}, 1000},
+		{"content length / 4, rounded up", map[string]string{"content-length": "4001"}, 1001},
+		{"prompt tokens header", map[string]string{"x-prompt-tokens": "250"}, 250},
+		{"larger of the two wins (cannot understate)", map[string]string{"x-prompt-tokens": "10", "content-length": "4000"}, 1000},
+		{"larger of the two wins (header higher)", map[string]string{"x-prompt-tokens": "5000", "content-length": "400"}, 5000},
+		{"garbage and negative values ignored", map[string]string{"x-prompt-tokens": "lots", "content-length": "-7"}, 1000},
+		{"capped", map[string]string{"x-prompt-tokens": "99999999999"}, 10_000_000},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := EstimateTokens(tc.headers, 1000); got != tc.want {
+				t.Errorf("EstimateTokens() = %d, want %d", got, tc.want)
+			}
+		})
+	}
+}

@@ -2,6 +2,7 @@ package dataplane
 
 import (
 	"strconv"
+	"strings"
 
 	"github.com/MKand/gateway-ai-workload-prioritization/pkg/governor"
 	"github.com/MKand/gateway-ai-workload-prioritization/pkg/router"
@@ -9,10 +10,13 @@ import (
 
 // Request headers read by the governor.
 const (
-	HeaderPriority  = "x-request-priority"
-	HeaderPolicy    = "x-governor-policy"
-	HeaderPath      = ":path"
-	HeaderAuthority = ":authority"
+	HeaderPriority = "x-request-priority"
+	HeaderPolicy   = "x-governor-policy"
+	HeaderPath     = ":path"
+	// HeaderPromptTokens lets a client state its input-token count.
+	HeaderPromptTokens  = "x-prompt-tokens"
+	HeaderContentLength = "content-length"
+	HeaderAuthority     = ":authority"
 )
 
 // Headers written by the governor. Any client-supplied values for these are
@@ -59,13 +63,51 @@ type Result struct {
 type Evaluator struct {
 	cache  *SnapshotCache
 	engine *governor.CascadeEngine
+	// defaultTokens is charged for requests without any size hint.
+	defaultTokens int64
+}
+
+// bytesPerToken approximates how many request-body bytes make up one input
+// token. Gemini averages about 4 characters per token; JSON framing makes the
+// estimate slightly pessimistic, which is the safe direction.
+const bytesPerToken = 4
+
+// maxTokenEstimate caps any single estimate so a bogus header cannot drain or
+// overflow a bucket.
+const maxTokenEstimate int64 = 10_000_000
+
+// WithDefaultTokens sets the estimate for requests without Content-Length or
+// X-Prompt-Tokens, and returns the Evaluator. Values <= 0 are ignored.
+func (e *Evaluator) WithDefaultTokens(n int64) *Evaluator {
+	if n > 0 {
+		e.defaultTokens = n
+	}
+	return e
+}
+
+// EstimateTokens estimates a request's input tokens from its headers: the
+// larger of X-Prompt-Tokens and Content-Length/4, so a client cannot
+// understate a large body. Without either hint it returns defaultTokens.
+// headers must have lower-case keys.
+func EstimateTokens(headers map[string]string, defaultTokens int64) int64 {
+	var est int64
+	if v, err := strconv.ParseInt(strings.TrimSpace(headers[HeaderPromptTokens]), 10, 64); err == nil && v > 0 {
+		est = v
+	}
+	if n, err := strconv.ParseInt(strings.TrimSpace(headers[HeaderContentLength]), 10, 64); err == nil && n > 0 {
+		est = max(est, (n+bytesPerToken-1)/bytesPerToken)
+	}
+	if est == 0 {
+		est = defaultTokens
+	}
+	return min(est, maxTokenEstimate)
 }
 
 // NewEvaluator builds an Evaluator. When the cascade engine selects a fallback,
 // the request's :path and :authority are rewritten so Envoy proxies it to the
 // fallback model/region.
 func NewEvaluator(cache *SnapshotCache, engine *governor.CascadeEngine) *Evaluator {
-	return &Evaluator{cache: cache, engine: engine}
+	return &Evaluator{cache: cache, engine: engine, defaultTokens: governor.DefaultRequestTokensEstimate}
 }
 
 // ParsePriority maps an X-Request-Priority header value to a Priority. Unknown
@@ -92,7 +134,14 @@ func (e *Evaluator) Evaluate(headers map[string]string) Result {
 	}
 
 	priority := ParsePriority(headers[HeaderPriority])
-	d := e.engine.Evaluate(e.cache.Get(), info.ProjectID, info.Region, info.Model, priority, headers[HeaderPolicy])
+	d := e.engine.Decide(e.cache.Get(), governor.Request{
+		Project:  info.ProjectID,
+		Region:   info.Region,
+		Model:    info.Model,
+		Priority: priority,
+		Policy:   headers[HeaderPolicy],
+		Tokens:   EstimateTokens(headers, e.defaultTokens),
+	})
 
 	res.SetHeaders[HeaderReason] = d.Reason
 

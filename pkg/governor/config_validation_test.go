@@ -175,6 +175,29 @@ allowances:
 			wantErr: `critical_reserve_percent -5 must be between 0 and 90`,
 		},
 		{
+			name: "default request tokens",
+			body: okAllowance,
+			check: func(t *testing.T, c *Config) {
+				if c.RequestTokens() != DefaultRequestTokensEstimate {
+					t.Errorf("got %d", c.RequestTokens())
+				}
+			},
+		},
+		{
+			name: "configured request tokens",
+			body: okAllowance + "default_request_tokens: 250\n",
+			check: func(t *testing.T, c *Config) {
+				if c.RequestTokens() != 250 {
+					t.Errorf("got %d", c.RequestTokens())
+				}
+			},
+		},
+		{
+			name:    "negative request tokens",
+			body:    okAllowance + "default_request_tokens: -1\n",
+			wantErr: `default_request_tokens -1 cannot be negative`,
+		},
+		{
 			name:    "zero replicas",
 			body:    okAllowance + "dataplane_replicas: 0\n",
 			wantErr: `dataplane_replicas 0 must be at least 1`,

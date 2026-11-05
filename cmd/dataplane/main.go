@@ -68,7 +68,7 @@ func main() {
 	}
 
 	grpcServer := grpc.NewServer()
-	extprocv3.RegisterExternalProcessorServer(grpcServer, dataplane.NewExtProcServer(dataplane.NewEvaluator(cache, engine)))
+	extprocv3.RegisterExternalProcessorServer(grpcServer, dataplane.NewExtProcServer(dataplane.NewEvaluator(cache, engine).WithDefaultTokens(cfg.RequestTokens())))
 
 	go func() {
 		<-ctx.Done()

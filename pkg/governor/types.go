@@ -31,7 +31,20 @@ type Config struct {
 	// nil means 1.
 	DataplaneReplicas *int `json:"dataplaneReplicas,omitempty" yaml:"dataplane_replicas,omitempty"`
 
+	// DefaultRequestTokens is the input-token estimate charged for a request
+	// that has neither Content-Length nor X-Prompt-Tokens. 0 means
+	// DefaultRequestTokensEstimate.
+	DefaultRequestTokens int64 `json:"defaultRequestTokens,omitempty" yaml:"default_request_tokens,omitempty"`
+
 	CustomPolicies map[string]CustomPolicy `json:"customPolicies,omitempty" yaml:"custom_policies,omitempty"`
+}
+
+// RequestTokens returns the token estimate for requests without size hints.
+func (c *Config) RequestTokens() int64 {
+	if c == nil || c.DefaultRequestTokens <= 0 {
+		return DefaultRequestTokensEstimate
+	}
+	return c.DefaultRequestTokens
 }
 
 // ReservePercent returns the effective critical reserve percentage.
