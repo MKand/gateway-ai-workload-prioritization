@@ -68,10 +68,12 @@ const (
 var fakeRegions = map[string]string{"us-central1": usHost, "europe-west1": euHost}
 
 const e2eConfig = `
-org_id: "123"
 project_ids: ["p1"]
 regions: ["us-central1", "europe-west1"]
 models: ["gemini-3.5-flash"]
+allowances:
+  "us-central1/gemini-3.5-flash": { max_rpm: 1000, max_tpm: 1000000 }
+  "europe-west1/gemini-3.5-flash": { max_rpm: 1000, max_tpm: 1000000 }
 poll_interval: 30s
 safety_margin: 10
 custom_policies:
@@ -330,7 +332,7 @@ func TestEnvoyE2E(t *testing.T) {
 	startGRPC(t, cpAddr, func(s *grpc.Server) { pb.RegisterQuotaDiscoveryServiceServer(s, qds) })
 
 	// Data plane.
-	engine, err := governor.NewCascadeEngine(cfg.CustomPolicies)
+	engine, err := governor.NewCascadeEngineFromConfig(cfg)
 	if err != nil {
 		t.Fatal(err)
 	}

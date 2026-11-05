@@ -12,9 +12,28 @@ import (
 // CascadeEngine manages model downgrade and regional failover evaluation.
 type CascadeEngine struct {
 	customPolicies map[string]CustomPolicy
+	// bestEffortCeiling is the utilization (0-1) at which best-effort traffic
+	// is shed; everything above it is reserved for critical traffic.
+	bestEffortCeiling float64
 }
 
-// NewCascadeEngine creates a CascadeEngine with default and optional custom cascade chains.
+// NewCascadeEngineFromConfig builds a CascadeEngine from a loaded Config, so
+// the critical reserve comes from configuration.
+func NewCascadeEngineFromConfig(cfg *Config) (*CascadeEngine, error) {
+	if cfg == nil {
+		return nil, errors.New("config cannot be nil")
+	}
+	ce, err := NewCascadeEngine(cfg.CustomPolicies)
+	if err != nil {
+		return nil, err
+	}
+	ce.bestEffortCeiling = cfg.BestEffortCeiling()
+	return ce, nil
+}
+
+// NewCascadeEngine creates a CascadeEngine with custom cascade chains and the
+// default critical reserve. Prefer
+// NewCascadeEngineFromConfig in binaries.
 func NewCascadeEngine(customPolicies map[string]CustomPolicy) (*CascadeEngine, error) {
 	normPolicies := make(map[string]CustomPolicy)
 
@@ -51,7 +70,8 @@ func NewCascadeEngine(customPolicies map[string]CustomPolicy) (*CascadeEngine, e
 
 	}
 	return &CascadeEngine{
-		customPolicies: normPolicies,
+		customPolicies:    normPolicies,
+		bestEffortCeiling: float64(100-DefaultCriticalReservePercent) / 100,
 	}, nil
 }
 
@@ -67,6 +87,7 @@ func (ce *CascadeEngine) Evaluate(snapshot *pb.QuotaSnapshot, project, region, m
 
 	normPolicyName := strings.ToLower(strings.TrimSpace(policyName))
 	isPrimarySaturated := IsSaturated(primaryQuota)
+	isPrimaryAboveCeiling := isPrimarySaturated || ce.aboveCeiling(primaryQuota)
 
 	// 1. CRITICAL: Pass-through (never mutate or drop)
 	if priority == Priority_PRIORITY_CRITICAL {
@@ -80,11 +101,11 @@ func (ce *CascadeEngine) Evaluate(snapshot *pb.QuotaSnapshot, project, region, m
 		}
 	}
 
-	// 2. BEST_EFFORT: Shed if saturated or above threshold; never cascades
+	// 2. BEST_EFFORT (and unlabelled traffic, which is always treated as best
+	// effort): Shed if saturated or above the ceiling (the critical reserve
+	// starts there); never cascades.
 	if priority == Priority_PRIORITY_BEST_EFFORT || priority == Priority_PRIORITY_UNSPECIFIED {
-		isBestEffortShed := primaryQuota.UtilizationRpm >= DefaultShedThresholdBestEffort || primaryQuota.UtilizationTpm >= DefaultShedThresholdBestEffort
-
-		if isPrimarySaturated || isBestEffortShed {
+		if isPrimaryAboveCeiling {
 			return Decision{
 				Drop:       true,
 				Reason:     fmt.Sprintf("primary model %s is saturated/exceeded threshold (%s); best_effort does not cascade", model, formatUtilization(primaryQuota)),
@@ -97,9 +118,10 @@ func (ce *CascadeEngine) Evaluate(snapshot *pb.QuotaSnapshot, project, region, m
 		}
 	}
 
-	// 3. CUSTOM: Traverses explicit fallback steps if primary is saturated
+	// 3. CUSTOM: like best effort, custom traffic may not use the critical
+	// reserve. Once the primary reaches the ceiling, traverse the fallback steps.
 	if priority == Priority_PRIORITY_CUSTOM {
-		if !isPrimarySaturated {
+		if !isPrimaryAboveCeiling {
 			return Decision{
 				Drop:   false,
 				Reason: fmt.Sprintf("custom traffic: primary %s in %s healthy, admitted", model, region),
@@ -117,7 +139,7 @@ func (ce *CascadeEngine) Evaluate(snapshot *pb.QuotaSnapshot, project, region, m
 
 		for _, cs := range policy.Cascade {
 			quota := getEffectiveQuota(snapshot, project, cs.TargetRegion, cs.TargetModel)
-			if quota != nil && !IsSaturated(quota) {
+			if quota != nil && !IsSaturated(quota) && !ce.aboveCeiling(quota) {
 				return Decision{
 					Drop:          false,
 					ReplaceModel:  cs.TargetModel,
@@ -141,6 +163,12 @@ func (ce *CascadeEngine) Evaluate(snapshot *pb.QuotaSnapshot, project, region, m
 		Drop:   false,
 		Reason: "primary is healthy, traffic is being forwarded as expected",
 	}
+}
+
+// aboveCeiling reports whether a target's RPM or TPM utilization has reached
+// the best-effort ceiling, i.e. the remaining allowance is the critical reserve.
+func (ce *CascadeEngine) aboveCeiling(q *pb.ModelQuota) bool {
+	return q != nil && (q.UtilizationRpm >= ce.bestEffortCeiling || q.UtilizationTpm >= ce.bestEffortCeiling)
 }
 
 // getEffectiveQuota returns the project-level quota if present, otherwise falls back to org-level quota.

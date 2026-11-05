@@ -3,27 +3,57 @@ package governor
 import (
 	"time"
 
-	pb "github.com/MKand/gateway-ai-workload-prioritization/gen/go/governor/v1"
 	"google.golang.org/protobuf/types/known/durationpb"
 )
 
-type PriorityPolicy interface {
-	Name() string
-	Evaluate(quota *pb.ModelQuota) Decision
+type Config struct {
+	ProjectIDs           []string               `json:"projectIds" yaml:"project_ids"`
+	Regions              []string               `json:"regions" yaml:"regions"`
+	Models               []string               `json:"models" yaml:"models"`
+	PollInterval         time.Duration          `json:"pollInterval" yaml:"poll_interval"`
+	PollTimeout          time.Duration          `json:"pollTimeout" yaml:"poll_timeout"`
+	SafetyMarginPercent  int64                  `json:"safetyMargin" yaml:"safety_margin"`
+	DefaultProjectLimits map[string]*ModelLimit `json:"defaultProjectLimits" yaml:"default_project_limits"`
+
+	// Allowances is the org's DSQ allowance per "location/model" (for example
+	// "global/gemini-3.5-flash" or "us-central1/gemini-3.5-flash"). Customers
+	// cannot query this number, so it is configured up front. Keys are
+	// normalised to lower case by LoadConfig.
+	Allowances map[string]*ModelLimit `json:"allowances" yaml:"allowances"`
+
+	// CriticalReservePercent is the share of each allowance that only critical
+	// traffic may use. Best-effort and custom traffic stop at
+	// 100 - CriticalReservePercent. nil means DefaultCriticalReservePercent.
+	CriticalReservePercent *int64 `json:"criticalReservePercent,omitempty" yaml:"critical_reserve_percent,omitempty"`
+
+	// DataplaneReplicas is the number of data plane replicas the allowance is
+	// split across when the control plane cannot report the live count.
+	// nil means 1.
+	DataplaneReplicas *int `json:"dataplaneReplicas,omitempty" yaml:"dataplane_replicas,omitempty"`
+
+	CustomPolicies map[string]CustomPolicy `json:"customPolicies,omitempty" yaml:"custom_policies,omitempty"`
 }
 
-type Config struct {
-	OrgId                   string                  `json:"orgId" yaml:"org_id"`
-	ProjectIDs              []string                `json:"projectIds" yaml:"project_ids"`
-	Regions                 []string                `json:"regions" yaml:"regions"`
-	Models                  []string                `json:"models" yaml:"models"`
-	PollInterval            time.Duration           `json:"pollInterval" yaml:"poll_interval"`
-	PollTimeout             time.Duration           `json:"pollTimeout" yaml:"poll_timeout"`
-	SafetyMarginPercent     int64                   `json:"safetyMargin" yaml:"safety_margin"`
-	ShedThresholdBestEffort float64                 `json:"shedThresholdBestEffort" yaml:"shed_threshold_best_effort"`
-	DefaultProjectLimits    map[string]*ModelLimit  `json:"defaultProjectLimits" yaml:"default_project_limits"`
-	DefaultOrgLimits        map[string]*ModelLimit  `json:"defaultOrgLimits" yaml:"default_org_limits"`
-	CustomPolicies          map[string]CustomPolicy `json:"customPolicies,omitempty" yaml:"custom_policies,omitempty"`
+// ReservePercent returns the effective critical reserve percentage.
+func (c *Config) ReservePercent() int64 {
+	if c == nil || c.CriticalReservePercent == nil {
+		return DefaultCriticalReservePercent
+	}
+	return *c.CriticalReservePercent
+}
+
+// BestEffortCeiling returns the utilization (0-1) above which best-effort and
+// custom traffic may no longer consume an allowance.
+func (c *Config) BestEffortCeiling() float64 {
+	return float64(100-c.ReservePercent()) / 100
+}
+
+// Replicas returns the configured data plane replica count (at least 1).
+func (c *Config) Replicas() int {
+	if c == nil || c.DataplaneReplicas == nil {
+		return DefaultDataplaneReplicas
+	}
+	return *c.DataplaneReplicas
 }
 
 // Priority represents the classification of incoming LLM traffic.

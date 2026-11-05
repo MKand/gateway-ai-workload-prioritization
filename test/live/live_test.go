@@ -96,6 +96,7 @@ func host(region string) string { return region + "-aiplatform.googleapis.com" }
 
 type stack struct {
 	env      testEnv
+	cfg      *governor.Config
 	store    *controlplane.InMemoryStore
 	rec      *controlplane.Reconciler
 	cache    *dataplane.SnapshotCache
@@ -121,12 +122,12 @@ func startStack(t *testing.T, ctx context.Context, env testEnv) *stack {
 		t.Fatalf("usage client: %v", err)
 	}
 	t.Cleanup(func() { usageClient.Close() })
-	gcp, err := controlplane.NewGCPClient(ctx, cfg.OrgId, cfg.DefaultProjectLimits, cfg.DefaultOrgLimits, quotaClient, usageClient)
+	gcp, err := controlplane.NewGCPClient(ctx, cfg.DefaultProjectLimits, cfg.Allowances, quotaClient, usageClient)
 	if err != nil {
 		t.Fatalf("gcp client: %v", err)
 	}
 
-	s := &stack{env: env, store: controlplane.NewInMemoryStore(), cache: dataplane.NewSnapshotCache()}
+	s := &stack{env: env, cfg: cfg, store: controlplane.NewInMemoryStore(), cache: dataplane.NewSnapshotCache()}
 	if s.rec, err = controlplane.NewReconciler(cfg, gcp, s.store); err != nil {
 		t.Fatal(err)
 	}
@@ -139,7 +140,7 @@ func startStack(t *testing.T, ctx context.Context, env testEnv) *stack {
 	s.cpServer = serveGRPC(t, cpAddr, func(g *grpc.Server) { pb.RegisterQuotaDiscoveryServiceServer(g, qds) })
 
 	// Data plane.
-	engine, err := governor.NewCascadeEngine(cfg.CustomPolicies)
+	engine, err := governor.NewCascadeEngineFromConfig(cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -461,7 +462,7 @@ func TestLive(t *testing.T) {
 	t.Run("wait for primary to be idle", func(t *testing.T) {
 		waitFor(t, "project A primary utilization < 70%", idleTimeout, pollEvery, func() (bool, string) {
 			q := s.projectQuota(s.refresh(t, ctx), env.projectA, env.primary)
-			return q != nil && q.UtilizationRpm < governor.DefaultShedThresholdBestEffort, describe(q)
+			return q != nil && q.UtilizationRpm < s.cfg.BestEffortCeiling(), describe(q)
 		})
 	})
 

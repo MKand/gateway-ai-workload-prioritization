@@ -208,7 +208,7 @@ func TestGCPQuotaClient_ResolveLimit(t *testing.T) {
 
 // GCP Quota Fallback Test
 // Scenario: The GCP Cloud Quotas API returns an empty response (no limits configured on GCP) or fails to find a limit.
-// Expected Behavior: FetchQuotas should successfully fall back to using the static limits provided in the Config (projectLimits and orgLimits).
+// Expected Behavior: FetchQuotas should successfully fall back to using the static limits provided in the Config (projectLimits and allowances).
 // Why: This verifies that your service doesn't break if the GCP API is empty, and that the hierarchical fallback config works.
 // Test_FetchQuotas verifies GCPClient.FetchQuotas integration with fallback logic.
 // Test_FetchMetrics verifies GCPClient.FetchMetrics integration with fallback logic.
@@ -372,16 +372,16 @@ func TestNewGCPClient_Validation(t *testing.T) {
 	dummyQuota := &MockQuotaRequestClient{}
 	dummyUsage := &MockUsageRequestClient{}
 
-	if _, err := NewGCPClient(ctx, "", dummyLimits, dummyLimits, dummyQuota, dummyUsage); err == nil {
-		t.Error("Expected error for empty orgID, got nil")
-	}
-
-	if _, err := NewGCPClient(ctx, "org", nil, dummyLimits, dummyQuota, dummyUsage); err == nil {
+	if _, err := NewGCPClient(ctx, nil, dummyLimits, dummyQuota, dummyUsage); err == nil {
 		t.Error("Expected error for nil projectLimits, got nil")
 	}
 
-	if _, err := NewGCPClient(ctx, "org", dummyLimits, nil, dummyQuota, dummyUsage); err == nil {
-		t.Error("Expected error for nil orgLimits, got nil")
+	if _, err := NewGCPClient(ctx, dummyLimits, nil, dummyQuota, dummyUsage); err == nil {
+		t.Error("Expected error for nil allowances, got nil")
+	}
+
+	if _, err := NewGCPClient(ctx, dummyLimits, dummyLimits, dummyQuota, dummyUsage); err != nil {
+		t.Errorf("Expected no error for valid inputs, got %v", err)
 	}
 }
 

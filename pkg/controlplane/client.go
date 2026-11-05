@@ -71,30 +71,26 @@ func (mqc *RawModelQuota) GetKey() (string, error) {
 }
 
 type GCPClient struct {
-	projectLimits    map[string]*governor.ModelLimit
-	orgLimits        map[string]*governor.ModelLimit
+	projectLimits map[string]*governor.ModelLimit
+	// allowances is the configured org DSQ allowance per "location/model".
+	// It becomes the org-level quota in each snapshot.
+	allowances       map[string]*governor.ModelLimit
 	quotaClient      QuotaRequestClient
 	monitoringClient UsageRequestClient
-	orgID            string
 }
 
-func NewGCPClient(ctx context.Context, orgID string, projectLimits, orgLimits map[string]*governor.ModelLimit,
+func NewGCPClient(ctx context.Context, projectLimits, allowances map[string]*governor.ModelLimit,
 	quotaClient QuotaRequestClient, monitoringClient UsageRequestClient) (*GCPClient, error) {
-
-	if orgID == "" {
-		return nil, errors.New("org ID cannot be an empty string.")
-	}
 
 	if projectLimits == nil {
 		return nil, errors.New("project limits map cannot be nil.")
 	}
-	if orgLimits == nil {
-		return nil, errors.New("org limits map cannot be nil.")
+	if allowances == nil {
+		return nil, errors.New("allowances map cannot be nil.")
 	}
 	return &GCPClient{
-		orgID:            orgID,
 		projectLimits:    projectLimits,
-		orgLimits:        orgLimits,
+		allowances:       allowances,
 		quotaClient:      quotaClient,
 		monitoringClient: monitoringClient,
 	}, nil
@@ -206,8 +202,9 @@ func (gqc *GCPClient) FetchMetrics(ctx context.Context, projectIDs []string, reg
 
 	for _, r := range regions {
 		for _, m := range models {
-			// 1. Add Org-level quota (with org limits, 0 usage)
-			orgLimit := gqc.resolveFallbackLimit(gqc.orgLimits, "", r, m)
+			// 1. Add Org-level quota (the configured allowance, 0 usage; the
+			// reconciler sums project usage into it)
+			orgLimit := gqc.resolveFallbackLimit(gqc.allowances, "", r, m)
 			oKey := fmt.Sprintf("%s/%s", strings.ToLower(r), strings.ToLower(m))
 			resp[oKey] = &RawModelQuota{
 				Region:     r,
@@ -487,11 +484,10 @@ func (c *MockUsageRequestClient) makeUsageRequest(ctx context.Context, req *moni
 	return val, nil
 }
 
-func NewMockGCPClient(ctx context.Context, projectLimits, orgLimits map[string]*governor.ModelLimit) *GCPClient {
+func NewMockGCPClient(ctx context.Context, projectLimits, allowances map[string]*governor.ModelLimit) *GCPClient {
 	return &GCPClient{
-		orgID:            "mockorgid",
 		projectLimits:    projectLimits,
-		orgLimits:        orgLimits,
+		allowances:       allowances,
 		quotaClient:      &MockQuotaRequestClient{},
 		monitoringClient: &MockUsageRequestClient{},
 	}
