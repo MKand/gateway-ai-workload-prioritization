@@ -46,3 +46,6 @@ tmp/
 *~
 .DS_Store
 Thumbs.db
+
+# Live integration test state (generated config, recorded GCP changes)
+test/live/.state/
