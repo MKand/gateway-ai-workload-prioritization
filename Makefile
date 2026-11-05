@@ -5,7 +5,7 @@ UNAME_S := $(shell uname -s)
 GOPATH := $(shell go env GOPATH 2>/dev/null || echo $(HOME)/go)
 export PATH := $(PATH):$(GOPATH)/bin:$(HOME)/go/bin
 
-.PHONY: default check-env check-os check-tools proto build test test-race test-concurrency e2e live-check run-controlplane run-dataplane run-envoy live-single live-dual live-teardown help
+.PHONY: default check-env check-os check-tools proto build test test-race test-concurrency e2e live-check run-controlplane run-dataplane run-envoy live-preflight live-single live-dual live-teardown help
 
 # Default target when running just 'make' without arguments
 default:
@@ -115,6 +115,10 @@ e2e:
 ## ----------------------------------------------------------------------
 ## LIVE INTEGRATION TESTS (real GCP; see test/live/README.md)
 ## ----------------------------------------------------------------------
+live-preflight:
+	@test -n "$(PROJECT_A)" || { echo "usage: make live-preflight PROJECT_A=... [PROJECT_B=...] [MODEL=...]"; exit 1; }
+	test/live/preflight.sh $(PROJECT_A) $(PROJECT_B) $(MODEL)
+
 live-single:
 	@test -n "$(PROJECT_A)" -a -n "$(MODEL)" || { echo "usage: make live-single PROJECT_A=... MODEL=..."; exit 1; }
 	test/live/run-single.sh $(PROJECT_A) $(MODEL)
@@ -168,6 +172,7 @@ help:
 	@echo "  make test-concurrency  - Run concurrency tests (10 iterations) with Go race detector"
 	@echo "  make e2e               - Run Envoy end-to-end test (Docker, fake GCP)"
 	@echo "  make live-check        - Poll real GCP quotas/usage once and print the snapshot (CONFIG=...)"
+	@echo "  make live-preflight    - Read-only check of tools, identity, roles, billing for live tests (PROJECT_A=, [PROJECT_B=], [MODEL=])"
 	@echo "  make live-single       - Live GCP integration test, one project (PROJECT_A=, MODEL=)"
 	@echo "  make live-dual         - Live GCP integration test, two projects (PROJECT_A=, PROJECT_B=, MODEL=)"
 	@echo "  make live-teardown     - Undo live test GCP changes (normally automatic)"

@@ -1,54 +1,122 @@
 # Live Integration Tests
 
-Full end-to-end test against real GCP: real Cloud Quotas + Cloud Monitoring reads, real control plane / data plane, real Envoy config, real Vertex AI traffic.
-Each script runs **setup -> test -> teardown**. Teardown always runs, even on failure or Ctrl-C.
+End-to-end tests against real GCP: real Cloud Quotas and Cloud Monitoring reads, the real control plane and data plane, the real Envoy config, and real Vertex AI traffic.
+Each run is **setup -> test -> teardown**. Teardown always runs, even on failure or Ctrl-C, and restores everything it changed.
 
-| Script | Projects | What it adds |
-| :--- | :--- | :--- |
-| `run-single.sh PROJECT_A MODEL` | 1 | Live reads, forward, shed, reroute, failure modes |
-| `run-dual.sh PROJECT_A PROJECT_B MODEL` | 2 (same org) | Plus per-project tracking (M1) and org usage = A + B (M2) |
+| Command | Projects | Covers | Time |
+| :--- | :--- | :--- | :--- |
+| `make live-single PROJECT_A=... MODEL=...` | 1 | Live reads, forward, shed, reroute, fail-open | ~3-5 min |
+| `make live-dual PROJECT_A=... PROJECT_B=... MODEL=...` | 2 (same org) | Plus per-project isolation and org usage = A + B | ~3-5 min |
+
+## Quick start
 
 ```bash
-gcloud auth application-default login
-make live-single PROJECT_A=my-test-a MODEL=gemini-2.5-flash
-make live-dual   PROJECT_A=my-test-a PROJECT_B=my-test-b MODEL=gemini-2.5-flash
-make live-teardown   # manual cleanup, only needed after GQG_KEEP=1 or a failed teardown
+# One-time, as a project owner: least-privilege service account (no keys)
+test/live/create-sa.sh <a> [<b>]
+export GQG_SA=gqg-live-test@<a>.iam.gserviceaccount.com
+gcloud auth application-default login --impersonate-service-account=$GQG_SA
+
+# Every run
+make live-preflight PROJECT_A=<a> PROJECT_B=<b> MODEL=<model>   # read-only; tells you what is missing
+DRY_RUN=1 make live-single PROJECT_A=<a> MODEL=<model>          # prints every change it would make
+make live-single PROJECT_A=<a> MODEL=<model>
+make live-dual   PROJECT_A=<a> PROJECT_B=<b> MODEL=<model>
 ```
 
-## Requirements
+## Step-by-step setup
 
-- `gcloud` (with `beta` component), `docker`, `go`, `jq`.
-- ADC user with, on every test project: enable/disable APIs, read and update quota preferences (`roles/cloudquotas.admin`), `roles/monitoring.viewer`, `roles/aiplatform.user`.
-- Dedicated test projects: project A's quota is lowered during the run.
-- `MODEL` must be a **base model ID** that has a per-project RPM quota (`GenerateContentRequestsPerMinutePerProjectPerRegionPerBaseModel`). Setup fails with instructions if it does not.
-- Free local ports: 10000, 9901, 50051, 50052.
+### 1. Tools
 
-## What each step does
+`gcloud` (with `gcloud components install beta`), `docker` (daemon running), `go`, `jq`.
 
-| Step | Changes |
+### 2. Projects
+
+| Requirement | Why |
 | :--- | :--- |
-| `setup.sh` | Enables `aiplatform`, `cloudquotas`, `monitoring` APIs where disabled; records project A's current RPM limit for `us-central1`/`MODEL`; lowers it to 10 via a quota preference; writes `.state/governor.yaml` and `.state/env` |
-| `go test -tags live` | Starts the control plane (real GCP clients), data plane and Envoy (Docker); runs the scenarios below; about 100 tiny Vertex calls (`maxOutputTokens: 1`) |
-| `teardown.sh` | Restores the quota preference to the recorded value; disables only the APIs setup enabled; removes the Envoy container; deletes `.state/` |
+| Dedicated, throwaway project(s) | Project A's quota is lowered to 10 RPM during the run |
+| Inside an **organization** | Setup reads the org ID; dual mode needs both projects in the **same** org |
+| No org policy blocking `us-central1`, `europe-west1` or Gemini models | Primary and fallback regions |
+
+### 3. Identity and roles
+
+**Recommended: a service account, impersonated.** It has exactly the roles below, needs no keys, and works the same for a team or in CI.
+
+```bash
+test/live/create-sa.sh <a> [<b>]        # run as a project owner; safe to re-run
+```
+
+It creates `gqg-live-test@<a>.iam.gserviceaccount.com`, grants it the roles below on each project, lets you impersonate it (`roles/iam.serviceAccountTokenCreator`), and enables the APIs that calls made as the SA are charged to (IAM, IAM Credentials, Resource Manager, Cloud Billing, Service Usage on project A). Then, on the machine that runs the tests:
+
+```bash
+export GQG_SA=gqg-live-test@<a>.iam.gserviceaccount.com              # scripts impersonate it
+gcloud auth application-default login --impersonate-service-account=$GQG_SA   # Go test impersonates it
+```
+
+New IAM grants take 1-2 minutes to propagate. Remove everything with `test/live/create-sa.sh --delete <a> [<b>]`.
+
+**Alternative: your own account.** Grant it the same roles (or `roles/owner`), and log in twice with the same account:
+
+```bash
+gcloud auth login <account>
+gcloud auth application-default login
+```
+
+| Role (on every test project) | Needed for |
+| :--- | :--- |
+| `roles/browser` | Reading the project and its org |
+| `roles/serviceusage.serviceUsageAdmin` | Enabling/disabling APIs; using the project as the quota project |
+| `roles/cloudquotas.admin` | Reading limits; lowering and restoring the quota preference |
+| `roles/monitoring.viewer` | Reading usage metrics |
+| `roles/aiplatform.user` | Calling Gemini |
+
+### 4. Model
+
+The test needs a model with a **per-project RPM quota in both regions** (`GenerateContentRequestsPerMinutePerProjectPerRegionPerBaseModel`).
+Most current Gemini text models use Dynamic Shared Quota and have **no** such quota. TTS variants such as `gemini-2.5-flash-tts` do (verified 2026-10-27).
+`make live-preflight` lists the eligible models once the Cloud Quotas API is enabled on project A. Retired models (`gemini-1.5-*`) are still listed but return 404.
+
+### 5. Run and read the results
+
+- `make live-preflight ...` must end with "All checks passed".
+- `DRY_RUN=1 make live-single ...` shows every `gcloud` change.
+- `make live-single ...` / `make live-dual ...` print `--- PASS`/`--- FAIL` per scenario plus `evidence:` lines (Envoy access log, snapshot values, responses).
 
 ## Scenarios
 
 | ID | Check |
 | :--- | :--- |
-| R1-R3 | Reconcile works; lowered limit is visible; every project/region has real limits |
-| F1 | Healthy best effort is sent to the primary region |
+| R1-R3 | Reconcile works; the lowered limit is visible; every project/region has a real (non-fallback) limit |
+| F1 | Healthy best effort is forwarded to the primary region |
 | F2 | Non-Vertex host gets 404 |
-| F3 | Background load saturates project A's primary (waits for Monitoring) |
+| F3 | Background load saturates project A's primary (waits for Monitoring, ~1.5-2 min) |
 | F4 | Best effort gets 429 with `Retry-After`, no upstream call |
-| F5 | Custom is rerouted: Envoy dials the fallback region host with the rewritten path |
+| F5 | Custom is rerouted: Envoy dials the fallback region with the rewritten path |
 | F6 | Critical is never rewritten |
 | M1, M2 | (dual) Project B is unaffected; org usage equals A + B |
-| X1, X2 | Data plane down: Envoy fails open. Control plane down: data plane keeps the last snapshot |
+| X1, X2 | Data plane down: Envoy fails open. Control plane down: the last snapshot is kept |
 
-## Notes
+## What setup and teardown change
 
-- A run takes about 15-30 minutes: quota changes take a few minutes to apply and usage metrics lag traffic.
-- Quota preferences cannot be deleted, so teardown sets the preference back to the original value instead. Its ID is `gqg-live-rpm-<region>-<model>`.
-- `DRY_RUN=1` prints every mutating `gcloud` command without running it.
-- `GQG_KEEP=1` skips teardown for debugging; run `make live-teardown` afterwards.
-- Overrides: `GQG_REGION_PRIMARY` (default `us-central1`), `GQG_REGION_FALLBACK` (`europe-west1`), `GQG_LOWERED_RPM` (`10`).
+| Step | Changes |
+| :--- | :--- |
+| `setup.sh` | Enables `aiplatform`, `cloudquotas`, `monitoring` where disabled; records project A's current RPM limit; lowers it to 10 via a quota preference; writes `.state/` |
+| `teardown.sh` | Restores the preference to the recorded value; disables only the APIs setup enabled; removes the Envoy container and `.state/` |
+
+Quota preferences can't be deleted, so the preference `gqg-live-rpm-<region>-<model>` stays, set to the original value.
+
+## Troubleshooting
+
+| Symptom | Cause / fix |
+| :--- | :--- |
+| `no '...PerBaseModel' entry for ... base_model=<model>` | The model has no per-project quota (Dynamic Shared Quota) or isn't a base model ID; pick one from preflight |
+| `404 Publisher model ... not found` | The model is retired or not available in the region |
+| `R3 ... equals the built-in fallback` | The limit wasn't read from Cloud Quotas; check the model ID and `make live-check` output |
+| `API requires a quota project` | ADC user credentials need a quota project; `run.sh` sets `GOOGLE_CLOUD_QUOTA_PROJECT` to project A |
+| Scripts and Go test use different identities | With `GQG_SA`: `gcloud auth application-default login --impersonate-service-account=$GQG_SA`. Without: re-run `gcloud auth application-default login` as the CLI account |
+| `no valid identity for the scripts` with `GQG_SA` | You can't impersonate the SA yet: run `create-sa.sh`, wait 1-2 min |
+| A command hangs, or fails with `API ... not enabled on project` | Calls as the SA are charged to project A; re-run `create-sa.sh` to enable the needed APIs |
+| `port ... in use` | Stop whatever listens on 10000, 9901, 50051 or 50052 |
+| `a previous run was not torn down` | `make live-teardown` |
+| Teardown couldn't restore the quota | State is kept; re-run `make live-teardown`, or use the printed `gcloud` command |
+
+Options: `GQG_SA` (service account to impersonate), `DRY_RUN=1` (print changes only), `GQG_KEEP=1` (skip teardown for debugging), `GQG_REGION_PRIMARY` / `GQG_REGION_FALLBACK` (defaults `us-central1` / `europe-west1`), `GQG_LOWERED_RPM` (default `10`), `GQG_REQUEST_BODY` (custom request JSON).
