@@ -62,6 +62,16 @@ func main() {
 		}
 	}()
 
+	// Each replica needs a unique ID so the control plane can split the
+	// allowance by demand; the PID guards against two replicas on one host.
+	replicaID := fmt.Sprintf("%s-%d", hostname, os.Getpid())
+	reporter := dataplane.NewUsageReporter(pb.NewQuotaDiscoveryServiceClient(conn), engine.Limiter(), replicaID, 0)
+	go func() {
+		if err := reporter.Run(ctx); err != nil && !errors.Is(err, context.Canceled) {
+			log.Printf("Usage reporter stopped: %v", err)
+		}
+	}()
+
 	lis, err := net.Listen("tcp", fmt.Sprintf(":%d", *port))
 	if err != nil {
 		log.Fatalf("Failed to listen on port %d: %v", *port, err)

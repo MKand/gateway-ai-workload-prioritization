@@ -161,3 +161,27 @@ func TestServer_StreamQuotas(t *testing.T) {
 		}
 	}
 }
+func TestServer_ReportUsage(t *testing.T) {
+	client, cleanup := setupTestServer(t, controlplane.NewInMemoryStore())
+	defer cleanup()
+	ctx := context.Background()
+
+	if _, err := client.ReportUsage(ctx, &pb.ReportUsageRequest{}); status.Code(err) != codes.InvalidArgument {
+		t.Fatalf("empty client id: got %v, want InvalidArgument", err)
+	}
+
+	if _, err := client.ReportUsage(ctx, &pb.ReportUsageRequest{ClientId: "a", Demand: []*pb.TargetDemand{{Target: "t/m", Requests: 30}}}); err != nil {
+		t.Fatal(err)
+	}
+	resp, err := client.ReportUsage(ctx, &pb.ReportUsageRequest{ClientId: "b", Demand: []*pb.TargetDemand{{Target: "t/m", Requests: 10}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.GetActiveReplicas() != 2 || len(resp.GetShares()) != 1 {
+		t.Fatalf("unexpected response %+v", resp)
+	}
+	// 5% floor + 90% * 10/40.
+	if got := resp.GetShares()[0].GetRpmFraction(); got < 0.2749 || got > 0.2751 {
+		t.Fatalf("b's share = %v, want 0.275", got)
+	}
+}

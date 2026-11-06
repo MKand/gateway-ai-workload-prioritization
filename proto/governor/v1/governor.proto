@@ -43,6 +43,31 @@ message StreamQuotasRequest {
 
 message GetQuotaSnapshotRequest {}
 
+// TargetDemand is the traffic one data plane replica saw for one target
+// ("location/model") since its previous report: admitted plus rejected.
+message TargetDemand {
+  string target = 1;   // "location/model", lower case
+  int64 requests = 2;
+  int64 tokens = 3;    // estimated input tokens
+}
+
+message ReportUsageRequest {
+  string client_id = 1;              // unique per data plane replica
+  repeated TargetDemand demand = 2;
+}
+
+// TargetShare is the fraction (0-1] of a target's allowance a replica may use.
+message TargetShare {
+  string target = 1;
+  double rpm_fraction = 2;
+  double tpm_fraction = 3;
+}
+
+message ReportUsageResponse {
+  repeated TargetShare shares = 1;
+  int32 active_replicas = 2;
+}
+
 // QuotaDiscoveryService allows Data Plane nodes to discover and stream quota updates.
 service QuotaDiscoveryService {
   // Server-streaming RPC: Control Plane pushes new QuotaSnapshots to Data Plane in real-time
@@ -50,4 +75,8 @@ service QuotaDiscoveryService {
 
   // Unary RPC: One-shot fetch of the latest snapshot on startup
   rpc GetQuotaSnapshot(GetQuotaSnapshotRequest) returns (QuotaSnapshot);
+
+  // Unary RPC: each Data Plane replica reports its recent demand every few
+  // seconds and receives its demand-weighted share of each allowance.
+  rpc ReportUsage(ReportUsageRequest) returns (ReportUsageResponse);
 }

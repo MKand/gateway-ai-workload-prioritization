@@ -47,6 +47,11 @@ func NewCascadeEngineFromConfig(cfg *Config) (*CascadeEngine, error) {
 	return ce, nil
 }
 
+// Limiter returns the engine's local limiter (nil if none).
+func (ce *CascadeEngine) Limiter() *Limiter {
+	return ce.limiter
+}
+
 // WithLimiter replaces the engine's local limiter (for example one with a
 // fake clock in tests) and returns the engine.
 func (ce *CascadeEngine) WithLimiter(l *Limiter) *CascadeEngine {

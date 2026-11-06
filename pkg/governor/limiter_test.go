@@ -269,3 +269,85 @@ func TestCascadeEngine_DecideWithLimiter(t *testing.T) {
 		}
 	})
 }
+
+func TestLimiter_ApplySharesAndReset(t *testing.T) {
+	clk := newFakeClock()
+	l, err := governor.NewLimiter(limiterConfig(100, 0, 2), clk.Now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	admitAll := func() int {
+		n := 0
+		for {
+			if ok, _ := l.TryAdmit("us-central1", "m", 0); !ok {
+				return n
+			}
+			n++
+		}
+	}
+
+	// Growing the share raises the cap but does not hand out tokens
+	// instantly (that could let replicas jointly exceed the allowance):
+	// the balance stays at 50, and best effort stops at 30% of 80 = 24.
+	l.ApplyShares([]*pb.TargetShare{{Target: "US-CENTRAL1/m", RpmFraction: 0.8, TpmFraction: 0.8}, {Target: "unknown/x", RpmFraction: 1}})
+	if got := admitAll(); got != 26 {
+		t.Fatalf("admitted %d right after growing the share, want 26", got)
+	}
+	// After a minute of refill the bucket is full at the new cap of 80; best
+	// effort stops at 70% = 56.
+	clk.Advance(time.Minute)
+	if got := admitAll(); got != 56 {
+		t.Fatalf("admitted %d with a refilled 80%% share, want 56", got)
+	}
+
+	// Shrinking clamps the balance; reset returns to the even 2-way split (50).
+	l.ApplyShares([]*pb.TargetShare{{Target: "us-central1/m", RpmFraction: 0.1}})
+	l.ResetShares()
+	if rpm := availRPM(t, l); rpm > 50 {
+		t.Fatalf("after reset available = %d, want <= 50", rpm)
+	}
+}
+
+// availRPM probes how many requests fit using critical admissions, which do
+// not stop at the reserve. It drains the bucket.
+func availRPM(t *testing.T, l *governor.Limiter) int {
+	t.Helper()
+	n := 0
+	for i := 0; i < 1000; i++ {
+		within, _ := l.AdmitCritical("us-central1", "m", 0)
+		if !within {
+			return n
+		}
+		n++
+	}
+	return n
+}
+
+func TestLimiter_DrainDemandCountsAdmittedAndRejected(t *testing.T) {
+	l, err := governor.NewLimiter(limiterConfig(10, 0, 1), newFakeClock().Now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 20; i++ { // 7 admitted, 13 rejected
+		l.TryAdmit("us-central1", "m", 100)
+	}
+	l.AdmitCritical("europe-west1", "m", 5)
+	l.TryAdmit("asia-east1", "m", 1) // unknown: not counted
+
+	got := map[string]*pb.TargetDemand{}
+	for _, d := range l.DrainDemand() {
+		got[d.GetTarget()] = d
+	}
+	if d := got["us-central1/m"]; d == nil || d.GetRequests() != 20 || d.GetTokens() != 2000 {
+		t.Fatalf("us-central1 demand = %+v, want 20 requests / 2000 tokens", d)
+	}
+	if d := got["europe-west1/m"]; d == nil || d.GetRequests() != 1 || d.GetTokens() != 5 {
+		t.Fatalf("europe-west1 demand = %+v", d)
+	}
+	if len(got) != 2 {
+		t.Fatalf("unexpected targets: %v", got)
+	}
+	if again := l.DrainDemand(); len(again) != 0 {
+		t.Fatalf("second drain should be empty, got %v", again)
+	}
+}
