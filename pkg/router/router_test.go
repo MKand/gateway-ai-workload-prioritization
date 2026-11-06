@@ -2,6 +2,7 @@ package router_test
 
 import (
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/MKand/gateway-ai-workload-prioritization/pkg/router"
@@ -220,5 +221,71 @@ func BenchmarkMutate(b *testing.B) {
 	b.ReportAllocs()
 	for i := 0; i < b.N; i++ {
 		_, _ = router.Mutate(info, "gemini-1.5-flash", "us-east4")
+	}
+}
+
+func TestParse_GlobalAndPublisher(t *testing.T) {
+	const globalPath = "/v1/projects/p1/locations/global/publishers/google/models/gemini-3.5-flash:generateContent"
+	info, err := router.Parse(globalPath, "aiplatform.googleapis.com")
+	if err != nil {
+		t.Fatalf("global path: %v", err)
+	}
+	if info.Region != "global" || info.Model != "gemini-3.5-flash" || info.ProjectID != "p1" {
+		t.Fatalf("unexpected route info %+v", info)
+	}
+
+	for _, pub := range []string{"anthropic", "meta"} {
+		p := "/v1/projects/p1/locations/us-east5/publishers/" + pub + "/models/claude:rawPredict"
+		if _, err := router.Parse(p, "us-east5-aiplatform.googleapis.com"); !errors.Is(err, router.ErrUnsupportedPublisher) {
+			t.Errorf("publisher %s: err = %v, want ErrUnsupportedPublisher", pub, err)
+		}
+	}
+	if _, err := router.Parse("/v1/projects/p1/locations/us-central1/publishers/Google/models/gemini-3.5-flash:generateContent", ""); err != nil {
+		t.Errorf("publisher match should be case-insensitive: %v", err)
+	}
+}
+
+func TestMutateHost_GlobalAndCustomHosts(t *testing.T) {
+	base := func(region, host string) *router.RouteInfo {
+		return &router.RouteInfo{APIVersion: "v1", ProjectID: "p1", Region: region, Publisher: "google", Model: "m", Method: "generateContent", Host: host}
+	}
+	tests := []struct {
+		name   string
+		info   *router.RouteInfo
+		target string
+		want   string
+	}{
+		{"global to regional", base("global", "aiplatform.googleapis.com"), "europe-west4", "europe-west4-aiplatform.googleapis.com"},
+		{"regional to global", base("us-central1", "us-central1-aiplatform.googleapis.com"), "global", "aiplatform.googleapis.com"},
+		{"global host with port", base("global", "aiplatform.googleapis.com:443"), "us-east1", "us-east1-aiplatform.googleapis.com"},
+		{"same region keeps host", base("global", "aiplatform.googleapis.com"), "GLOBAL", "aiplatform.googleapis.com"},
+		{"custom private host kept", base("us-central1", "vertex.internal.example.com"), "global", "vertex.internal.example.com"},
+		{"lookalike host kept", base("us-central1", "evil-aiplatform.googleapis.com.example.com"), "global", "evil-aiplatform.googleapis.com.example.com"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := router.MutateHost(tc.info, tc.target); got != tc.want {
+				t.Errorf("MutateHost() = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestMutate_ProjectNeverChanges(t *testing.T) {
+	info := &router.RouteInfo{APIVersion: "v1", ProjectID: "caller-project", Region: "global", Publisher: "google", Model: "m", Method: "generateContent", Host: "aiplatform.googleapis.com"}
+	for _, target := range []string{"global", "us-central1", "europe-west4"} {
+		p, _ := router.Mutate(info, "other-model", target)
+		if !strings.Contains(p, "/projects/caller-project/") {
+			t.Errorf("reroute to %s changed the project: %s", target, p)
+		}
+	}
+}
+
+func TestHostFor(t *testing.T) {
+	if got := router.HostFor("global"); got != "aiplatform.googleapis.com" {
+		t.Errorf("HostFor(global) = %q", got)
+	}
+	if got := router.HostFor("US-Central1"); got != "us-central1-aiplatform.googleapis.com" {
+		t.Errorf("HostFor(US-Central1) = %q", got)
 	}
 }

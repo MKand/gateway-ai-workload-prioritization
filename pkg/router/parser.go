@@ -24,6 +24,10 @@ var (
 
 	// ErrMissingRegion is returned when the location/region segment is missing.
 	ErrMissingRegion = errors.New("missing location/region in path")
+
+	// ErrUnsupportedPublisher is returned for non-Google publishers (for
+	// example partner models). The MVP only governs Gemini models.
+	ErrUnsupportedPublisher = errors.New("only publisher \"google\" (Gemini) models are governed")
 )
 
 // Parse extracts RouteInfo from a raw request path and host.
@@ -105,6 +109,9 @@ func Parse(rawPath, host string) (*RouteInfo, error) {
 
 	if publisher == "" {
 		publisher = "google"
+	}
+	if !strings.EqualFold(publisher, "google") {
+		return nil, fmt.Errorf("%w: got %q", ErrUnsupportedPublisher, publisher)
 	}
 
 	return &RouteInfo{

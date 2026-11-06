@@ -43,10 +43,10 @@ static_resources:
                           duration_ms: "%DURATION%"
                 route_config:
                   virtual_hosts:
-                    # Only Vertex AI regional endpoints are proxied. Anything
-                    # else is rejected so Envoy is not an open proxy.
+                    # Only Vertex AI endpoints (global and regional) are proxied.
+                    # Anything else is rejected so Envoy is not an open proxy.
                     - name: vertex_ai
-                      domains: ["*-aiplatform.googleapis.com"]
+                      domains: ["aiplatform.googleapis.com", "*-aiplatform.googleapis.com"]
                       routes:
                         - match: { prefix: "/" }
                           route:
@@ -58,7 +58,7 @@ static_resources:
                         - match: { prefix: "/" }
                           direct_response:
                             status: 404
-                            body: { inline_string: "only *-aiplatform.googleapis.com hosts are proxied\n" }
+                            body: { inline_string: "only aiplatform.googleapis.com and *-aiplatform.googleapis.com hosts are proxied\n" }
                 http_filters:
                   # 1. Governor: decides forward / reroute / shed and mutates headers.
                   - name: envoy.filters.http.ext_proc
