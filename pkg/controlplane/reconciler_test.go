@@ -182,7 +182,7 @@ func TestReconciler_LifecycleStart(t *testing.T) {
 		errChan <- reconciler.Start(ctx)
 	}()
 
-	time.Sleep(25 * time.Millisecond)
+	time.Sleep(45 * time.Millisecond)
 	cancel()
 
 	err := <-errChan
@@ -376,5 +376,207 @@ func TestReconcile_KeyFailure(t *testing.T) {
 	err = reconciler.reconcile(ctx)
 	if err == nil {
 		t.Error("Expected reconcile to fail due to bad metric key, but it succeeded")
+	}
+}
+
+type scriptedMetricsClient struct {
+	mu      sync.Mutex
+	results []error
+	calls   int
+}
+
+func (s *scriptedMetricsClient) FetchMetrics(_ context.Context, _, _, _ []string) (map[string]*RawModelQuota, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	idx := s.calls
+	s.calls++
+	if idx < len(s.results) && s.results[idx] != nil {
+		return nil, s.results[idx]
+	}
+	return map[string]*RawModelQuota{
+		"projecta/us-central1/model1": {
+			ProjectId:  "projecta",
+			Region:     "us-central1",
+			Model:      "model1",
+			MaxRpm:     100,
+			MaxTpm:     5000,
+			CurrentRpm: 10,
+			CurrentTpm: 500,
+		},
+	}, nil
+}
+
+func TestReconciler_JitteredSteadyStatePolling(t *testing.T) {
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+
+	cfg := &governor.Config{
+		ProjectIDs:          []string{"projecta"},
+		Regions:             []string{"us-central1"},
+		Models:              []string{"model1"},
+		PollInterval:        30 * time.Second,
+		SafetyMarginPercent: 10,
+	}
+	client := &scriptedMetricsClient{}
+	store := NewInMemoryStore()
+
+	rec, err := NewReconciler(cfg, client, store, WithJitterFraction(0.10), WithStartupJitter(false))
+	if err != nil {
+		t.Fatalf("NewReconciler() unexpected error: %v", err)
+	}
+
+	rngSeq := []float64{0.0, 0.5, 0.99, 0.25}
+	rngIdx := 0
+	rec.randFloat64 = func() float64 {
+		v := rngSeq[rngIdx%len(rngSeq)]
+		rngIdx++
+		return v
+	}
+
+	var sleeps []time.Duration
+	rec.sleepFn = func(ctx context.Context, d time.Duration) error {
+		sleeps = append(sleeps, d)
+		if len(sleeps) >= 4 {
+			cancel()
+			return ctx.Err()
+		}
+		return nil
+	}
+
+	if err := rec.Start(ctx); !errors.Is(err, context.Canceled) {
+		t.Fatalf("Start() error = %v, want context.Canceled", err)
+	}
+
+	minSteady := 27 * time.Second
+	maxSteady := 33 * time.Second
+	distinct := make(map[time.Duration]bool)
+	for i, d := range sleeps {
+		if d < minSteady || d > maxSteady {
+			t.Errorf("sleep[%d] = %v, want within [%v, %v]", i, d, minSteady, maxSteady)
+		}
+		distinct[d] = true
+	}
+	if len(distinct) < 3 {
+		t.Errorf("steady-state sleeps = %v, want jittered variation across ticks", sleeps)
+	}
+}
+
+func TestReconciler_ExponentialBackoffAndReset(t *testing.T) {
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+
+	cfg := &governor.Config{
+		ProjectIDs:          []string{"projecta"},
+		Regions:             []string{"us-central1"},
+		Models:              []string{"model1"},
+		PollInterval:        10 * time.Second,
+		SafetyMarginPercent: 10,
+	}
+	transientErr := errors.New("monitoring api unavailable")
+	client := &scriptedMetricsClient{
+		results: []error{transientErr, transientErr, transientErr, transientErr, nil},
+	}
+	store := NewInMemoryStore()
+
+	rec, err := NewReconciler(
+		cfg,
+		client,
+		store,
+		WithJitterFraction(0.10),
+		WithMaxBackoff(60*time.Second),
+		WithStartupJitter(false),
+	)
+	if err != nil {
+		t.Fatalf("NewReconciler() unexpected error: %v", err)
+	}
+
+	rec.randFloat64 = func() float64 { return 0.5 }
+
+	var sleeps []time.Duration
+	rec.sleepFn = func(ctx context.Context, d time.Duration) error {
+		sleeps = append(sleeps, d)
+		if len(sleeps) >= 5 {
+			cancel()
+			return ctx.Err()
+		}
+		return nil
+	}
+
+	if err := rec.Start(ctx); !errors.Is(err, context.Canceled) {
+		t.Fatalf("Start() error = %v, want context.Canceled", err)
+	}
+
+	// Failure 1 -> ~20s, Failure 2 -> ~40s, Failure 3 -> capped <= 60s, Failure 4 -> capped <= 60s,
+	// Call 5 succeeds -> resets to ~10s steady-state interval.
+	wantRanges := []struct {
+		min time.Duration
+		max time.Duration
+	}{
+		{18 * time.Second, 20 * time.Second},
+		{36 * time.Second, 40 * time.Second},
+		{54 * time.Second, 60 * time.Second},
+		{54 * time.Second, 60 * time.Second},
+		{9 * time.Second, 11 * time.Second},
+	}
+	for i, wr := range wantRanges {
+		if sleeps[i] < wr.min || sleeps[i] > wr.max {
+			t.Errorf("sleep[%d] = %v, want in [%v, %v]", i, sleeps[i], wr.min, wr.max)
+		}
+	}
+}
+
+func TestReconciler_StartupJitterDesynchronizesReplicas(t *testing.T) {
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+
+	cfg := &governor.Config{
+		ProjectIDs:          []string{"projecta"},
+		Regions:             []string{"us-central1"},
+		Models:              []string{"model1"},
+		PollInterval:        30 * time.Second,
+		SafetyMarginPercent: 10,
+	}
+	client := &scriptedMetricsClient{}
+	store := NewInMemoryStore()
+
+	rec, err := NewReconciler(cfg, client, store, WithJitterFraction(0.10), WithStartupJitter(true))
+	if err != nil {
+		t.Fatalf("NewReconciler() unexpected error: %v", err)
+	}
+	rec.randFloat64 = func() float64 { return 0.5 }
+
+	var startupDelay time.Duration
+	rec.sleepFn = func(ctx context.Context, d time.Duration) error {
+		startupDelay = d
+		// Before initial reconcile completes, store should still have 0 saves.
+		cancel()
+		return ctx.Err()
+	}
+
+	err = rec.Start(ctx)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("Start() error = %v, want context.Canceled", err)
+	}
+	if startupDelay != 1500*time.Millisecond {
+		t.Errorf("startupDelay = %v, want 1.5s", startupDelay)
+	}
+	if client.calls != 0 {
+		t.Errorf("FetchMetrics calls during canceled startup sleep = %d, want 0", client.calls)
+	}
+}
+
+func TestNewReconciler_OptionValidation(t *testing.T) {
+	cfg := &governor.Config{}
+	client := NewMockGCPClient(t.Context(), nil, nil)
+	store := NewInMemoryStore()
+
+	if _, err := NewReconciler(cfg, client, store, WithJitterFraction(-0.1)); err == nil {
+		t.Errorf("NewReconciler(jitter=-0.1) error = nil, want validation error")
+	}
+	if _, err := NewReconciler(cfg, client, store, WithJitterFraction(1.5)); err == nil {
+		t.Errorf("NewReconciler(jitter=1.5) error = nil, want validation error")
+	}
+	if _, err := NewReconciler(cfg, client, store, WithMaxBackoff(-time.Second)); err == nil {
+		t.Errorf("NewReconciler(maxBackoff=-1s) error = nil, want validation error")
 	}
 }
