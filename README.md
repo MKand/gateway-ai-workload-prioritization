@@ -54,13 +54,15 @@ repo/
 
    | Field | Value |
    | :--- | :--- |
-   | `org_id` | `gcloud projects get-ancestors <project-id>` (the `organization` row) |
    | `project_ids` | Projects to govern |
-   | `regions` | Primary regions **and** every fallback region used in `custom_policies` |
-   | `models` | Base model IDs that have a per-project RPM quota (see below) |
+   | `regions` | Primary regions **and** every fallback region used in `custom_policies` (`global` is allowed) |
+   | `models` | Base model IDs to govern |
+   | `allowances` | Your org's DSQ allowance per `location/model` (`max_rpm` and/or `max_tpm`). It cannot be queried, so set it from your account team or your observed peak without 429s. Every cascade target needs one. Do not commit real numbers. |
+   | `critical_reserve_percent` | Share of each allowance only critical traffic may use (default `30`, range `0`-`90`) |
+   | `dataplane_replicas` | Replicas the allowance is split across if the control plane cannot report the live count (default `1`) |
    | `custom_policies` | Fallback cascades, selected per request with `X-Governor-Policy` |
 
-   Which models have a per-project quota (models on Dynamic Shared Quota are not listed and fall back to `default_*_limits`):
+   Which models have a per-project quota (models on Dynamic Shared Quota are not listed and fall back to `default_project_limits`):
    ```bash
    gcloud beta quotas info describe GenerateContentRequestsPerMinutePerProjectPerRegionPerBaseModel \
      --service=aiplatform.googleapis.com --project=<project-id> --format=json \
