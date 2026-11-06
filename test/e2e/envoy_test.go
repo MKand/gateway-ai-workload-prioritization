@@ -60,20 +60,23 @@ const (
 	dpAddr      = "0.0.0.0:50052" // reachable from the Envoy container via host-gateway
 	usHost      = "us-central1-aiplatform.googleapis.com"
 	euHost      = "europe-west1-aiplatform.googleapis.com"
+	globalHost  = "aiplatform.googleapis.com"
+	globalPath  = "/v1/projects/p1/locations/global/publishers/google/models/gemini-3.5-flash:generateContent"
 	usPath      = "/v1/projects/p1/locations/us-central1/publishers/google/models/gemini-3.5-flash:generateContent"
 	euPath      = "/v1/projects/p1/locations/europe-west1/publishers/google/models/gemini-3.5-flash:generateContent"
 	clientToken = "Bearer test-token"
 )
 
-var fakeRegions = map[string]string{"us-central1": usHost, "europe-west1": euHost}
+var fakeRegions = map[string]string{"us-central1": usHost, "europe-west1": euHost, "global": globalHost}
 
 const e2eConfig = `
 project_ids: ["p1"]
-regions: ["us-central1", "europe-west1"]
+regions: ["us-central1", "europe-west1", "global"]
 models: ["gemini-3.5-flash"]
 allowances:
   "us-central1/gemini-3.5-flash": { max_rpm: 1000, max_tpm: 1000000 }
   "europe-west1/gemini-3.5-flash": { max_rpm: 1000, max_tpm: 1000000 }
+  "global/gemini-3.5-flash": { max_rpm: 1000, max_tpm: 1000000 }
 poll_interval: 30s
 safety_margin: 10
 custom_policies:
@@ -81,6 +84,10 @@ custom_policies:
     cascade:
       - target_model: "gemini-3.5-flash"
         region: "europe-west1"
+  fallback-global:
+    cascade:
+      - target_model: "gemini-3.5-flash"
+        region: "global"
 `
 
 type fakeMetrics struct {
@@ -145,7 +152,7 @@ func writeCerts(t *testing.T, dir string) {
 	srvTmpl := &x509.Certificate{
 		SerialNumber: big.NewInt(2), Subject: pkix.Name{CommonName: "fakevertex"},
 		NotBefore: time.Now().Add(-time.Hour), NotAfter: time.Now().Add(time.Hour),
-		DNSNames:    []string{usHost, euHost},
+		DNSNames:    []string{usHost, euHost, globalHost},
 		KeyUsage:    x509.KeyUsageDigitalSignature,
 		ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
 	}
@@ -276,7 +283,12 @@ type result struct {
 
 func call(t *testing.T, host, priority, policy string) result {
 	t.Helper()
-	req, _ := http.NewRequest(http.MethodPost, envoyURL+usPath, strings.NewReader(`{"contents":[]}`))
+	return callPath(t, usPath, host, priority, policy)
+}
+
+func callPath(t *testing.T, path, host, priority, policy string) result {
+	t.Helper()
+	req, _ := http.NewRequest(http.MethodPost, envoyURL+path, strings.NewReader(`{"contents":[]}`))
 	req.Host = host
 	req.Header.Set("Authorization", clientToken)
 	req.Header.Set("Content-Type", "application/json")
@@ -366,6 +378,19 @@ func TestEnvoyE2E(t *testing.T) {
 		expect(t, r.echo.Headers["X-Governor-Target-Region"], "", "spoofed header stripped")
 	})
 
+	t.Run("global endpoint is proxied and governed", func(t *testing.T) {
+		r := callPath(t, globalPath, globalHost, "best_effort", "")
+		expect(t, r.status, http.StatusOK, "status")
+		expect(t, r.echo.ServedBy, "global", "served_by")
+		expect(t, r.echo.Headers["X-Governor-Decision"], dataplane.DecisionForward, "decision")
+	})
+
+	t.Run("non-google publisher bypasses the governor", func(t *testing.T) {
+		r := callPath(t, "/v1/projects/p1/locations/us-central1/publishers/anthropic/models/claude:rawPredict", usHost, "best_effort", "")
+		expect(t, r.status, http.StatusOK, "status")
+		expect(t, r.echo.Headers["X-Governor-Decision"], dataplane.DecisionBypass, "decision")
+	})
+
 	t.Run("non vertex host is rejected (no open proxy)", func(t *testing.T) {
 		r := call(t, "example.com", "critical", "")
 		expect(t, r.status, http.StatusNotFound, "status")
@@ -400,6 +425,15 @@ func TestEnvoyE2E(t *testing.T) {
 		expect(t, r.echo.Headers["X-Governor-Decision"], dataplane.DecisionReroute, "decision")
 		expect(t, r.echo.Headers["X-Governor-Original-Path"], usPath, "original path")
 		expect(t, r.echo.Headers["Authorization"], clientToken, "authorization passthrough")
+	})
+
+	t.Run("saturated/custom rerouted from regional to the global endpoint", func(t *testing.T) {
+		r := call(t, usHost, "custom", "fallback-global")
+		expect(t, r.status, http.StatusOK, "status")
+		expect(t, r.echo.ServedBy, "global", "served_by")
+		expect(t, r.echo.Host, globalHost, "host")
+		expect(t, r.echo.Path, globalPath, "path")
+		expect(t, r.echo.Headers["X-Governor-Decision"], dataplane.DecisionReroute, "decision")
 	})
 }
 

@@ -46,21 +46,45 @@ func MutatePath(info *RouteInfo, targetModel, targetRegion string) string {
 	return path
 }
 
-// MutateHost generates the appropriate target hostname if the region changes.
-// e.g. "us-central1-aiplatform.googleapis.com" -> "us-east4-aiplatform.googleapis.com"
+// GlobalLocation is the Vertex AI location served by the global endpoint.
+const GlobalLocation = "global"
+
+// vertexDomain is the suffix shared by every Vertex AI endpoint.
+const vertexDomain = "aiplatform.googleapis.com"
+
+// HostFor returns the public Vertex AI hostname for a location: the global
+// endpoint "aiplatform.googleapis.com" for "global", otherwise
+// "{region}-aiplatform.googleapis.com".
+func HostFor(location string) string {
+	if strings.EqualFold(location, GlobalLocation) {
+		return vertexDomain
+	}
+	return strings.ToLower(location) + "-" + vertexDomain
+}
+
+// isVertexHost reports whether host is a public Vertex AI endpoint (global or
+// regional), ignoring any port.
+func isVertexHost(host string) bool {
+	h := strings.ToLower(host)
+	if i := strings.LastIndexByte(h, ':'); i != -1 {
+		h = h[:i]
+	}
+	return h == vertexDomain || strings.HasSuffix(h, "-"+vertexDomain)
+}
+
+// MutateHost returns the hostname to use after a region change, for example
+// "us-central1-aiplatform.googleapis.com" -> "europe-west4-aiplatform.googleapis.com"
+// or -> "aiplatform.googleapis.com" for the global location. Custom hostnames
+// (private DNS, PSC) are kept unchanged.
 func MutateHost(info *RouteInfo, targetRegion string) string {
 	if info == nil {
 		return ""
 	}
-	if targetRegion == "" || targetRegion == info.Region {
+	if targetRegion == "" || strings.EqualFold(targetRegion, info.Region) {
 		return info.Host
 	}
-
-	// If the existing host contains "aiplatform.googleapis.com", replace the region prefix
-	if strings.Contains(info.Host, "aiplatform.googleapis.com") {
-		return fmt.Sprintf("%s-aiplatform.googleapis.com", targetRegion)
+	if isVertexHost(info.Host) {
+		return HostFor(targetRegion)
 	}
-
-	// Fallback to existing host if custom hostname or private DNS is used without region prefix
 	return info.Host
 }
