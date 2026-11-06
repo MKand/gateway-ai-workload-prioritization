@@ -2,7 +2,7 @@ package dataplane
 
 import (
 	"context"
-	"log"
+	"log/slog"
 	"time"
 
 	pb "github.com/MKand/gateway-ai-workload-prioritization/gen/go/governor/v1"
@@ -26,6 +26,7 @@ type UsageReporter struct {
 	limiter  *governor.Limiter
 	clientID string
 	interval time.Duration
+	logger   *slog.Logger
 
 	failures int
 }
@@ -35,7 +36,27 @@ func NewUsageReporter(client pb.QuotaDiscoveryServiceClient, limiter *governor.L
 	if interval <= 0 {
 		interval = DefaultReportInterval
 	}
-	return &UsageReporter{client: client, limiter: limiter, clientID: clientID, interval: interval}
+	return &UsageReporter{
+		client:   client,
+		limiter:  limiter,
+		clientID: clientID,
+		interval: interval,
+		logger:   slog.Default(),
+	}
+}
+
+// SetLogger configures the structured logger used by UsageReporter.
+func (r *UsageReporter) SetLogger(l *slog.Logger) {
+	if l != nil {
+		r.logger = l
+	}
+}
+
+func (r *UsageReporter) log() *slog.Logger {
+	if r.logger != nil {
+		return r.logger
+	}
+	return slog.Default()
 }
 
 // Run reports on every tick until ctx is cancelled.
@@ -68,7 +89,7 @@ func (r *UsageReporter) ReportOnce(ctx context.Context) bool {
 	if err != nil {
 		r.failures++
 		if r.failures == fallbackAfterFailures {
-			log.Printf("usage report failed %d times (%v); using the even split from dataplane_replicas", r.failures, err)
+			r.log().WarnContext(ctx, "usage report failed; using the even split from dataplane_replicas", "failures", r.failures, "err", err)
 			r.limiter.ResetShares()
 		}
 		return false

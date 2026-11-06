@@ -5,7 +5,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
-	"log"
+	"log/slog"
 	"net"
 	"os"
 	"os/signal"
@@ -15,6 +15,7 @@ import (
 	pb "github.com/MKand/gateway-ai-workload-prioritization/gen/go/governor/v1"
 	"github.com/MKand/gateway-ai-workload-prioritization/pkg/controlplane"
 	"github.com/MKand/gateway-ai-workload-prioritization/pkg/governor"
+	"github.com/MKand/gateway-ai-workload-prioritization/pkg/logging"
 	"github.com/MKand/gateway-ai-workload-prioritization/pkg/server"
 	"github.com/MKand/gateway-ai-workload-prioritization/pkg/transport"
 	"google.golang.org/grpc"
@@ -28,31 +29,44 @@ func main() {
 	tlsKey := flag.String("tls-key", "", "PEM private key for the gRPC server")
 	allowInsecure := flag.Bool("insecure", false, "serve gRPC without TLS (local development only)")
 	once := flag.Bool("once", false, "poll GCP quotas and usage once, print the snapshot as JSON to stdout and exit")
+	logLevel := flag.String("log-level", "info", "structured log level (debug, info, warn, error)")
+	logFormat := flag.String("log-format", "json", "structured log format (json, text)")
 	flag.Parse()
+
+	logger, err := logging.New(*logFormat, *logLevel, os.Stderr)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "invalid logging configuration: %v\n", err)
+		os.Exit(1)
+	}
+	slog.SetDefault(logger)
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
 	cfg, err := governor.LoadConfig(*configPath)
 	if err != nil {
-		log.Fatalf("Failed to load config from %s: %v", *configPath, err)
+		logger.Error("failed to load config", "path", *configPath, "err", err)
+		os.Exit(1)
 	}
 
 	store := controlplane.NewInMemoryStore()
 	quotaServer, err := server.NewServer(store)
 	if err != nil {
-		log.Fatalf("Failed to create quota server: %v", err)
+		logger.Error("failed to create quota server", "err", err)
+		os.Exit(1)
 	}
 
 	quotaClient, err := controlplane.NewGCPQuotaRequestClient(ctx)
 	if err != nil {
-		log.Fatalf("Failed to create quota request client: %v", err)
+		logger.Error("failed to create quota request client", "err", err)
+		os.Exit(1)
 	}
 	defer quotaClient.Close()
 
 	usageClient, err := controlplane.NewGCPUsageRequestClient(ctx)
 	if err != nil {
-		log.Fatalf("Failed to create usage request client: %v", err)
+		logger.Error("failed to create usage request client", "err", err)
+		os.Exit(1)
 	}
 	defer usageClient.Close()
 
@@ -64,52 +78,59 @@ func main() {
 		usageClient,
 	)
 	if err != nil {
-		log.Fatalf("Failed to create GCP client: %v", err)
+		logger.Error("failed to create GCP client", "err", err)
+		os.Exit(1)
 	}
 
 	reconciler, err := controlplane.NewReconciler(cfg, gcpClient, store)
 	if err != nil {
-		log.Fatalf("Failed to create reconciler: %v", err)
+		logger.Error("failed to create reconciler", "err", err)
+		os.Exit(1)
 	}
+	reconciler.SetLogger(logger)
 
 	if *once {
 		if err := runOnce(ctx, cfg, reconciler, store); err != nil {
-			log.Fatalf("One-shot reconcile failed: %v", err)
+			logger.Error("one-shot reconcile failed", "err", err)
+			os.Exit(1)
 		}
 		return
 	}
 
 	lis, err := net.Listen("tcp", fmt.Sprintf(":%d", *port))
 	if err != nil {
-		log.Fatalf("Failed to listen on port %d: %v", *port, err)
+		logger.Error("failed to listen", "port", *port, "err", err)
+		os.Exit(1)
 	}
 
 	go func() {
-		log.Printf("Starting quota reconciler (poll interval: %v)...", cfg.PollInterval)
+		logger.Info("starting quota reconciler", "poll_interval", cfg.PollInterval)
 		if err := reconciler.Start(ctx); err != nil && !errors.Is(err, context.Canceled) {
-			log.Printf("Reconciler stopped with error: %v", err)
+			logger.Error("reconciler stopped with error", "err", err)
 		}
 	}()
 
 	creds, err := transport.ServerCredentials(*tlsCert, *tlsKey, *allowInsecure)
 	if err != nil {
-		log.Fatalf("Invalid TLS settings: %v", err)
+		logger.Error("invalid TLS settings", "err", err)
+		os.Exit(1)
 	}
 	if *allowInsecure {
-		log.Printf("WARNING: serving gRPC without TLS")
+		logger.Warn("serving gRPC without TLS; intended for local development only")
 	}
 	grpcServer := grpc.NewServer(grpc.Creds(creds))
 	pb.RegisterQuotaDiscoveryServiceServer(grpcServer, quotaServer)
 
 	go func() {
 		<-ctx.Done()
-		log.Println("Shutdown signal received, stopping Control Plane gRPC server...")
+		logger.Info("shutdown signal received; stopping control plane gRPC server")
 		grpcServer.GracefulStop()
 	}()
 
-	log.Printf("Gemini Quota Governor Control Plane listening on port %d...", *port)
+	logger.Info("control plane listening", "port", *port)
 	if err := grpcServer.Serve(lis); err != nil {
-		log.Fatalf("Failed to serve: %v", err)
+		logger.Error("gRPC server failed", "err", err)
+		os.Exit(1)
 	}
 }
 

@@ -1,8 +1,10 @@
 package controlplane
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -10,6 +12,7 @@ import (
 	"cloud.google.com/go/monitoring/apiv3/v2/monitoringpb"
 	pb "github.com/MKand/gateway-ai-workload-prioritization/gen/go/governor/v1"
 	"github.com/MKand/gateway-ai-workload-prioritization/pkg/governor"
+	"github.com/MKand/gateway-ai-workload-prioritization/pkg/logging"
 	"google.golang.org/genproto/googleapis/api/metric"
 	"google.golang.org/genproto/googleapis/api/monitoredres"
 )
@@ -376,5 +379,42 @@ func TestReconcile_KeyFailure(t *testing.T) {
 	err = reconciler.reconcile(ctx)
 	if err == nil {
 		t.Error("Expected reconcile to fail due to bad metric key, but it succeeded")
+	}
+}
+
+type failingMetricsClient struct {
+	err error
+}
+
+func (f *failingMetricsClient) FetchMetrics(_ context.Context, _, _, _ []string) (map[string]*RawModelQuota, error) {
+	return nil, f.err
+}
+
+func TestReconciler_StructuredErrorLogging(t *testing.T) {
+	var buf bytes.Buffer
+	logger, err := logging.New("json", "info", &buf)
+	if err != nil {
+		t.Fatalf("logging.New() error: %v", err)
+	}
+
+	cfg := &governor.Config{
+		ProjectIDs:   []string{"projecta"},
+		Regions:      []string{"us-central1"},
+		Models:       []string{"model1"},
+		PollInterval: 50 * time.Millisecond,
+	}
+	rec, err := NewReconciler(cfg, &failingMetricsClient{err: errors.New("upstream quota timeout")}, NewInMemoryStore())
+	if err != nil {
+		t.Fatalf("NewReconciler() error: %v", err)
+	}
+	rec.SetLogger(logger)
+
+	ctx, cancel := context.WithTimeout(t.Context(), 15*time.Millisecond)
+	defer cancel()
+	_ = rec.Start(ctx)
+
+	out := buf.String()
+	if !strings.Contains(out, `"severity":"ERROR"`) || !strings.Contains(out, "upstream quota timeout") {
+		t.Errorf("reconciler error log = %q, want JSON ERROR record with upstream quota timeout", out)
 	}
 }
