@@ -3,7 +3,10 @@ package governor
 import (
 	"fmt"
 	"strings"
+	"sync/atomic"
 	"time"
+
+	pb "github.com/MKand/gateway-ai-workload-prioritization/gen/go/governor/v1"
 )
 
 // unlimitedCapacity stands in for "no limit" on one dimension of an allowance
@@ -20,6 +23,21 @@ const unlimitedCapacity int64 = 1 << 40
 type Limiter struct {
 	buckets        map[string]*TokenBucket
 	reservePercent int64
+
+	// allowances holds the full org allowance per key; buckets hold this
+	// replica's share of it.
+	allowances map[string]ModelLimit
+	// replicas is the fallback even split used until (and whenever) the
+	// control plane does not provide demand-weighted shares.
+	replicas int64
+	// demand counts requests and tokens per key since the last DrainDemand,
+	// admitted or not, so the control plane can size this replica's share.
+	demand map[string]*demandCounter
+}
+
+type demandCounter struct {
+	requests atomic.Int64
+	tokens   atomic.Int64
 }
 
 // NewLimiter builds a Limiter from a loaded Config. Each allowance is split
@@ -33,14 +51,85 @@ func NewLimiter(cfg *Config, clock func() time.Time) (*Limiter, error) {
 	l := &Limiter{
 		buckets:        make(map[string]*TokenBucket, len(cfg.Allowances)),
 		reservePercent: cfg.ReservePercent(),
+		allowances:     make(map[string]ModelLimit, len(cfg.Allowances)),
+		replicas:       replicas,
+		demand:         make(map[string]*demandCounter, len(cfg.Allowances)),
 	}
 	for key, a := range cfg.Allowances {
 		if a == nil {
 			continue
 		}
-		l.buckets[strings.ToLower(key)] = NewTokenBucketWithClock(share(a.MaxRpm, replicas), share(a.MaxTpm, replicas), clock)
+		k := strings.ToLower(key)
+		l.allowances[k] = *a
+		l.demand[k] = &demandCounter{}
+		l.buckets[k] = NewTokenBucketWithClock(share(a.MaxRpm, replicas), share(a.MaxTpm, replicas), clock)
 	}
 	return l, nil
+}
+
+// fractionOf returns a fraction (0-1] of a limit. A limit of 0 means "no limit".
+func fractionOf(limit int64, f float64) int64 {
+	if limit <= 0 {
+		return unlimitedCapacity
+	}
+	if f <= 0 || f > 1 {
+		f = 1
+	}
+	return max(int64(float64(limit)*f), 1)
+}
+
+// ApplyShares resizes this replica's buckets to the demand-weighted shares
+// computed by the control plane. Unknown targets are ignored, and targets
+// missing from shares keep their current size.
+func (l *Limiter) ApplyShares(shares []*pb.TargetShare) {
+	if l == nil {
+		return
+	}
+	for _, sh := range shares {
+		k := strings.ToLower(strings.TrimSpace(sh.GetTarget()))
+		b, ok := l.buckets[k]
+		if !ok {
+			continue
+		}
+		a := l.allowances[k]
+		b.SetCapacity(fractionOf(a.MaxRpm, sh.GetRpmFraction()), fractionOf(a.MaxTpm, sh.GetTpmFraction()))
+	}
+}
+
+// ResetShares returns every bucket to the even split across the configured
+// dataplane_replicas. Used when the control plane is unreachable.
+func (l *Limiter) ResetShares() {
+	if l == nil {
+		return
+	}
+	for k, b := range l.buckets {
+		a := l.allowances[k]
+		b.SetCapacity(share(a.MaxRpm, l.replicas), share(a.MaxTpm, l.replicas))
+	}
+}
+
+// DrainDemand returns the demand seen per target since the previous call and
+// resets the counters. Targets with no demand are omitted.
+func (l *Limiter) DrainDemand() []*pb.TargetDemand {
+	if l == nil {
+		return nil
+	}
+	out := make([]*pb.TargetDemand, 0, len(l.demand))
+	for k, d := range l.demand {
+		req, tok := d.requests.Swap(0), d.tokens.Swap(0)
+		if req == 0 && tok == 0 {
+			continue
+		}
+		out = append(out, &pb.TargetDemand{Target: k, Requests: req, Tokens: tok})
+	}
+	return out
+}
+
+func (l *Limiter) record(location, model string, tokens int64) {
+	if d := l.demand[strings.ToLower(location)+"/"+strings.ToLower(model)]; d != nil {
+		d.requests.Add(1)
+		d.tokens.Add(max(tokens, 0))
+	}
 }
 
 // share returns one replica's slice of a limit. A limit of 0 means "no limit".
@@ -71,6 +160,7 @@ func (l *Limiter) TryAdmit(location, model string, tokens int64) (ok, known bool
 	if b == nil {
 		return false, false
 	}
+	l.record(location, model, tokens)
 	return b.TryAcquireAbove(tokens, l.reservePercent), true
 }
 
@@ -82,5 +172,6 @@ func (l *Limiter) AdmitCritical(location, model string, tokens int64) (within, k
 	if b == nil {
 		return true, false
 	}
+	l.record(location, model, tokens)
 	return b.ForceAcquire(tokens), true
 }

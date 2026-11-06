@@ -26,6 +26,9 @@ type QuotaDiscoveryServiceClient interface {
 	StreamQuotas(ctx context.Context, in *StreamQuotasRequest, opts ...grpc.CallOption) (QuotaDiscoveryService_StreamQuotasClient, error)
 	// Unary RPC: One-shot fetch of the latest snapshot on startup
 	GetQuotaSnapshot(ctx context.Context, in *GetQuotaSnapshotRequest, opts ...grpc.CallOption) (*QuotaSnapshot, error)
+	// Unary RPC: each Data Plane replica reports its recent demand every few
+	// seconds and receives its demand-weighted share of each allowance.
+	ReportUsage(ctx context.Context, in *ReportUsageRequest, opts ...grpc.CallOption) (*ReportUsageResponse, error)
 }
 
 type quotaDiscoveryServiceClient struct {
@@ -77,6 +80,15 @@ func (c *quotaDiscoveryServiceClient) GetQuotaSnapshot(ctx context.Context, in *
 	return out, nil
 }
 
+func (c *quotaDiscoveryServiceClient) ReportUsage(ctx context.Context, in *ReportUsageRequest, opts ...grpc.CallOption) (*ReportUsageResponse, error) {
+	out := new(ReportUsageResponse)
+	err := c.cc.Invoke(ctx, "/governor.v1.QuotaDiscoveryService/ReportUsage", in, out, opts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // QuotaDiscoveryServiceServer is the server API for QuotaDiscoveryService service.
 // All implementations must embed UnimplementedQuotaDiscoveryServiceServer
 // for forward compatibility
@@ -85,6 +97,9 @@ type QuotaDiscoveryServiceServer interface {
 	StreamQuotas(*StreamQuotasRequest, QuotaDiscoveryService_StreamQuotasServer) error
 	// Unary RPC: One-shot fetch of the latest snapshot on startup
 	GetQuotaSnapshot(context.Context, *GetQuotaSnapshotRequest) (*QuotaSnapshot, error)
+	// Unary RPC: each Data Plane replica reports its recent demand every few
+	// seconds and receives its demand-weighted share of each allowance.
+	ReportUsage(context.Context, *ReportUsageRequest) (*ReportUsageResponse, error)
 	mustEmbedUnimplementedQuotaDiscoveryServiceServer()
 }
 
@@ -97,6 +112,9 @@ func (UnimplementedQuotaDiscoveryServiceServer) StreamQuotas(*StreamQuotasReques
 }
 func (UnimplementedQuotaDiscoveryServiceServer) GetQuotaSnapshot(context.Context, *GetQuotaSnapshotRequest) (*QuotaSnapshot, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method GetQuotaSnapshot not implemented")
+}
+func (UnimplementedQuotaDiscoveryServiceServer) ReportUsage(context.Context, *ReportUsageRequest) (*ReportUsageResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method ReportUsage not implemented")
 }
 func (UnimplementedQuotaDiscoveryServiceServer) mustEmbedUnimplementedQuotaDiscoveryServiceServer() {}
 
@@ -150,6 +168,24 @@ func _QuotaDiscoveryService_GetQuotaSnapshot_Handler(srv interface{}, ctx contex
 	return interceptor(ctx, in, info, handler)
 }
 
+func _QuotaDiscoveryService_ReportUsage_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ReportUsageRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(QuotaDiscoveryServiceServer).ReportUsage(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: "/governor.v1.QuotaDiscoveryService/ReportUsage",
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(QuotaDiscoveryServiceServer).ReportUsage(ctx, req.(*ReportUsageRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // QuotaDiscoveryService_ServiceDesc is the grpc.ServiceDesc for QuotaDiscoveryService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -160,6 +196,10 @@ var QuotaDiscoveryService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "GetQuotaSnapshot",
 			Handler:    _QuotaDiscoveryService_GetQuotaSnapshot_Handler,
+		},
+		{
+			MethodName: "ReportUsage",
+			Handler:    _QuotaDiscoveryService_ReportUsage_Handler,
 		},
 	},
 	Streams: []grpc.StreamDesc{
