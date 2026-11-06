@@ -18,6 +18,23 @@ STATE_FILE="${STATE_DIR}/env"
 readonly QUOTA_SERVICE="aiplatform.googleapis.com"
 readonly RPM_QUOTA_ID="GenerateContentRequestsPerMinutePerProjectPerRegionPerBaseModel"
 readonly REQUIRED_APIS=(aiplatform.googleapis.com cloudquotas.googleapis.com monitoring.googleapis.com)
+# Least-privilege roles needed on every test project (see README "Roles").
+readonly LIVE_TEST_ROLES=(roles/browser roles/serviceusage.serviceUsageAdmin roles/cloudquotas.admin roles/monitoring.viewer roles/aiplatform.user)
+
+# GQG_SA=<service-account-email> makes every gcloud call in these scripts
+# impersonate that service account (no keys). The Go test uses ADC, which must
+# be created with: gcloud auth application-default login --impersonate-service-account=$GQG_SA
+if [[ -n "${GQG_SA:-}" ]]; then
+  export CLOUDSDK_AUTH_IMPERSONATE_SERVICE_ACCOUNT="${GQG_SA}"
+fi
+
+# test_identity prints the identity the scripts act as.
+test_identity() {
+  if [[ -n "${GQG_SA:-}" ]]; then echo "${GQG_SA}"; else gcloud config get-value account 2>/dev/null; fi
+}
+
+# Never block on interactive gcloud prompts (e.g. "enable API and retry?"); fail instead.
+export CLOUDSDK_CORE_DISABLE_PROMPTS=1
 
 log()  { printf '[live] %s\n' "$*" >&2; }
 warn() { printf '[live] WARNING: %s\n' "$*" >&2; }

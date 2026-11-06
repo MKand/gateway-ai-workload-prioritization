@@ -36,17 +36,53 @@ repo/
 
 ---
 
+## Setup
+
+1. **Tools:** Go, Docker, `gcloud` (with `beta`), `jq` (live tests only).
+2. **Authenticate** (same account for both):
+   ```bash
+   gcloud auth login
+   gcloud auth application-default login
+   export GOOGLE_CLOUD_QUOTA_PROJECT=<project-id>   # user ADC needs a quota project for Cloud Quotas / Monitoring
+   ```
+3. **Enable APIs** on every project you want governed:
+   ```bash
+   gcloud services enable aiplatform.googleapis.com cloudquotas.googleapis.com monitoring.googleapis.com --project=<project-id>
+   ```
+4. **IAM** on each project: `roles/cloudquotas.viewer`, `roles/monitoring.viewer`, `roles/aiplatform.user`.
+5. **Configure:** copy [config/governor.yaml](config/governor.yaml) and set:
+
+   | Field | Value |
+   | :--- | :--- |
+   | `org_id` | `gcloud projects get-ancestors <project-id>` (the `organization` row) |
+   | `project_ids` | Projects to govern |
+   | `regions` | Primary regions **and** every fallback region used in `custom_policies` |
+   | `models` | Base model IDs that have a per-project RPM quota (see below) |
+   | `custom_policies` | Fallback cascades, selected per request with `X-Governor-Policy` |
+
+   Which models have a per-project quota (models on Dynamic Shared Quota are not listed and fall back to `default_*_limits`):
+   ```bash
+   gcloud beta quotas info describe GenerateContentRequestsPerMinutePerProjectPerRegionPerBaseModel \
+     --service=aiplatform.googleapis.com --project=<project-id> --format=json \
+     | jq -r '.dimensionsInfos[] | select(.dimensions.base_model) | "\(.dimensions.region) \(.dimensions.base_model) \(.details.value)"'
+   ```
+6. **Verify:** `make live-check CONFIG=my-governor.yaml` should print real limits for each `project/region/model`.
+   A `maxRpm` of `1000` means the limit was not found and the built-in fallback is used.
+
+---
+
 ## Running Locally
 
 ```bash
 make test        # unit + in-process pipeline tests (config -> quotas -> headers)
 make e2e         # real Envoy in Docker, fake GCP metrics
-make live-check CONFIG=config/governor.yaml   # one real GCP poll, prints the snapshot
-make live-single PROJECT_A=... MODEL=...      # full live test, see test/live/README.md
+make live-check CONFIG=my-governor.yaml       # one real GCP poll, prints the snapshot
+make live-preflight PROJECT_A=... MODEL=...   # read-only check before live tests
+make live-single PROJECT_A=... MODEL=...      # full live test; setup guide: test/live/README.md
 
 # Full stack (three terminals)
-make run-controlplane   # plaintext gRPC locally (--insecure)
-make run-dataplane
+make run-controlplane CONFIG=my-governor.yaml   # plaintext gRPC locally (--insecure)
+make run-dataplane    CONFIG=my-governor.yaml
 make run-envoy          # listens on :10000
 
 # Send a request through the governor to real Vertex AI
@@ -73,13 +109,13 @@ Headers set: `x-governor-decision` (`forward`, `reroute`, `shed`, `bypass`), `x-
 
 ## Test Status
 
-Last live run: 2026-10-27 (Argolis org, `gemini-2.5-flash-tts`, `us-central1` primary lowered to 10 RPM, `europe-west1` fallback).
+Last live run: 2026-10-27 (`gemini-2.5-flash-tts`, `us-central1` primary lowered to 10 RPM, `europe-west1` fallback).
 
 | Suite | Command | What it covers | Status |
 | :--- | :--- | :--- | :--- |
 | Unit + pipeline | `make test` | Config, quota parsing, decisions, header mutation, TLS, config -> gRPC -> ext_proc | Pass |
 | Docker e2e | `make e2e` | Real Envoy + fake regional endpoints: forward, shed, reroute, 404 | Pass |
-| Live, 1 project | `make live-single` | Real quota/usage reads, saturation, shed, reroute to real Vertex AI, fail-open | Pass (12/12) |
+| Live, 1 project | `make live-single` ([setup guide](test/live/README.md)) | Real quota/usage reads, saturation, shed, reroute to real Vertex AI, fail-open | Pass (12/12) |
 | Live, 2 projects | `make live-dual` | Above + per-project isolation, org usage = A + B | Pass (14/14) |
 
 Known limits: current Gemini text models use Dynamic Shared Quota (no per-project limit to read); the governor reacts ~1.5-2 min after usage changes (Cloud Monitoring lag).
@@ -91,7 +127,7 @@ Known limits: current Gemini text models use Dynamic Shared Quota (no per-projec
 ### Local Development
 - **Go**: 1.25 or higher
 - **Docker**: for `make e2e` and `make run-envoy` (Envoy v1.34 image)
-- **GCP Credentials**: Application Default Credentials (`gcloud auth application-default login`) with permissions for Cloud Quotas (`cloudquotas.quotas.get`) and Cloud Monitoring.
+- **GCP Credentials**: see [Setup](#setup).
 
 ### Cloud Deployment (GCP)
 - **GCP Project**: Vertex AI API (`aiplatform.googleapis.com`) and Cloud Quotas API (`cloudquotas.googleapis.com`) enabled.
