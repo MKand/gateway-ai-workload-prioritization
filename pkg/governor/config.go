@@ -25,6 +25,10 @@ const (
 
 	// DefaultDataplaneReplicas is used when dataplane_replicas is unset.
 	DefaultDataplaneReplicas = 1
+
+	// DefaultRequestTokensEstimate is charged for requests without size hints
+	// when default_request_tokens is unset.
+	DefaultRequestTokensEstimate int64 = 1000
 )
 
 func LoadConfig(path string) (*Config, error) {
@@ -88,6 +92,10 @@ func validateAdmissionSettings(c *Config) error {
 		if r := *c.CriticalReservePercent; r < MinCriticalReservePercent || r > MaxCriticalReservePercent {
 			return fmt.Errorf("config validation failed: critical_reserve_percent %d must be between %d and %d", r, MinCriticalReservePercent, MaxCriticalReservePercent)
 		}
+	}
+
+	if c.DefaultRequestTokens < 0 {
+		return fmt.Errorf("config validation failed: default_request_tokens %d cannot be negative", c.DefaultRequestTokens)
 	}
 
 	if c.DataplaneReplicas != nil && *c.DataplaneReplicas < 1 {

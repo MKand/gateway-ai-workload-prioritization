@@ -21,12 +21,25 @@ type TokenBucket struct {
 	// This implemnetation prevents the faster rate from stealing quota from the slower rate.
 	lastRefillRPM time.Time
 	lastRefillTPM time.Time
+
+	// now is the bucket's clock. Tests inject a fake clock; production uses time.Now.
+	now func() time.Time
 }
 
 // NewTokenBucket creates a new dual-counter TokenBucket initialized to full capacity.
 func NewTokenBucket(maxRPM, maxTPM int64) *TokenBucket {
-	now := time.Now()
+	return NewTokenBucketWithClock(maxRPM, maxTPM, time.Now)
+}
+
+// NewTokenBucketWithClock is NewTokenBucket with an injectable clock, so tests
+// can control refill deterministically. A nil clock means time.Now.
+func NewTokenBucketWithClock(maxRPM, maxTPM int64, clock func() time.Time) *TokenBucket {
+	if clock == nil {
+		clock = time.Now
+	}
+	now := clock()
 	return &TokenBucket{
+		now:           clock,
 		maxRPM:        maxRPM,
 		maxTPM:        maxTPM,
 		currentRPM:    maxRPM,
@@ -41,7 +54,7 @@ func (tb *TokenBucket) SetCapacity(maxRPM, maxTPM int64) {
 	tb.mu.Lock()
 	defer tb.mu.Unlock()
 
-	tb.refillLocked(time.Now())
+	tb.refillLocked(tb.now())
 
 	tb.maxRPM = maxRPM
 	tb.maxTPM = maxTPM
@@ -61,7 +74,7 @@ func (tb *TokenBucket) TryAcquire(tokens int64) bool {
 	tb.mu.Lock()
 	defer tb.mu.Unlock()
 
-	now := time.Now()
+	now := tb.now()
 	tb.refillLocked(now)
 
 	reqTokens := tokens
@@ -77,6 +90,43 @@ func (tb *TokenBucket) TryAcquire(tokens int64) bool {
 	}
 
 	return false
+}
+
+// TryAcquireAbove is TryAcquire that refuses to dip into the bottom
+// floorPercent of each capacity. It lets best-effort traffic use the bucket
+// only down to the critical reserve. A dimension with capacity 0 is treated
+// as having no floor.
+func (tb *TokenBucket) TryAcquireAbove(tokens, floorPercent int64) bool {
+	tb.mu.Lock()
+	defer tb.mu.Unlock()
+	tb.refillLocked(tb.now())
+
+	reqTokens := max(tokens, 0)
+	floorRPM := tb.maxRPM * floorPercent / 100
+	floorTPM := tb.maxTPM * floorPercent / 100
+	if tb.currentRPM-1 >= floorRPM && tb.currentTPM-reqTokens >= floorTPM {
+		tb.currentRPM--
+		tb.currentTPM -= reqTokens
+		return true
+	}
+	return false
+}
+
+// ForceAcquire always takes 1 request and the given tokens, letting the
+// balance go negative (down to -capacity). It is used for critical traffic,
+// which is never shed: the debt keeps best-effort traffic out until the
+// overuse has been repaid by refill. It reports whether the request fitted
+// within the available capacity.
+func (tb *TokenBucket) ForceAcquire(tokens int64) (fitted bool) {
+	tb.mu.Lock()
+	defer tb.mu.Unlock()
+	tb.refillLocked(tb.now())
+
+	reqTokens := max(tokens, 0)
+	fitted = tb.currentRPM >= 1 && tb.currentTPM >= reqTokens
+	tb.currentRPM = max(tb.currentRPM-1, -tb.maxRPM)
+	tb.currentTPM = max(tb.currentTPM-reqTokens, -tb.maxTPM)
+	return fitted
 }
 
 // Refund adds back over-reserved tokens (e.g. when actual tokens < estimated reservation).
@@ -96,7 +146,7 @@ func (tb *TokenBucket) GetAvailable() (availRPM, availTPM int64) {
 	tb.mu.Lock()
 	defer tb.mu.Unlock()
 
-	tb.refillLocked(time.Now())
+	tb.refillLocked(tb.now())
 	return tb.currentRPM, tb.currentTPM
 }
 
@@ -132,7 +182,7 @@ func (tb *TokenBucket) refillLocked(now time.Time) {
 func (tb *TokenBucket) SyncHeadroom(headroomRPM, headroomTPM int64) {
 	tb.mu.Lock()
 	defer tb.mu.Unlock()
-	now := time.Now()
+	now := tb.now()
 
 	tb.refillLocked(now)
 	if headroomRPM <= 0 {
