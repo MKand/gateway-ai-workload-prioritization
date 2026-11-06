@@ -35,7 +35,7 @@ static_resources:
                           authority: "%REQ(:AUTHORITY)%"
                           path: "%REQ(:PATH)%"
                           priority: "%REQ(X-REQUEST-PRIORITY)%"
-                          decision: "%REQ(X-GOVERNOR-DECISION)%"
+                          decision: "%DYNAMIC_METADATA(envoy.filters.http.ext_proc:decision)%"
                           original_path: "%REQ(X-GOVERNOR-ORIGINAL-PATH)%"
                           response_code: "%RESPONSE_CODE%"
                           response_flags: "%RESPONSE_FLAGS%"
@@ -78,6 +78,9 @@ static_resources:
                         response_trailer_mode: SKIP
                       mutation_rules:
                         allow_all_routing: true
+                      metadata_options:
+                        receiving_namespaces:
+                          untyped: ["envoy.filters.http.ext_proc"]
                   # 2. Resolve the (possibly rewritten) :authority. Must run after ext_proc.
                   - name: envoy.filters.http.dynamic_forward_proxy
                     typed_config:

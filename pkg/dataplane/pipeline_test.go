@@ -137,6 +137,14 @@ func setHeaders(opts []*corev3.HeaderValueOption) map[string]string {
 	return out
 }
 
+func dynamicDecision(resp *extprocv3.ProcessingResponse) string {
+	ns := resp.GetDynamicMetadata().GetFields()[dataplane.ExtProcMetadataNamespace].GetStructValue()
+	if ns == nil {
+		return ""
+	}
+	return ns.GetFields()["decision"].GetStringValue()
+}
+
 func waitFor(t *testing.T, what string, cond func() bool) {
 	t.Helper()
 	deadline := time.Now().Add(5 * time.Second)
@@ -213,6 +221,9 @@ func TestPipeline_ConfigToHeaders(t *testing.T) {
 		if got["x-governor-decision"] != dataplane.DecisionForward {
 			t.Errorf("[%s] decision = %q, want forward (reason: %s)", prio, got["x-governor-decision"], got["x-governor-reason"])
 		}
+		if d := dynamicDecision(resp); d != dataplane.DecisionForward {
+			t.Errorf("[%s] dynamic metadata decision = %q, want forward", prio, d)
+		}
 	}
 
 	// Usage spikes to 97%: reconcile pushes a new snapshot over the stream.
@@ -233,6 +244,9 @@ func TestPipeline_ConfigToHeaders(t *testing.T) {
 	}
 	if h := setHeaders(ir.GetHeaders().GetSetHeaders()); h["retry-after"] != "5" || h["x-governor-decision"] != dataplane.DecisionShed {
 		t.Errorf("best_effort: 429 headers = %v", h)
+	}
+	if d := dynamicDecision(resp); d != dataplane.DecisionShed {
+		t.Errorf("best_effort: dynamic metadata decision = %q, want shed", d)
 	}
 
 	// Custom traffic is rerouted to the EU fallback.
