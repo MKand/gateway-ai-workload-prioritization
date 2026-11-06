@@ -370,3 +370,81 @@ func TestCascadeEngine_Evaluate(t *testing.T) {
 		}
 	})
 }
+
+// TestCascadeEngine_FromConfig checks that the critical reserve comes from
+// configuration instead of a hard-coded constant, and that unlabelled traffic
+// is always treated as best effort.
+func TestCascadeEngine_FromConfig(t *testing.T) {
+	snapshotAt := func(util float64) *pb.QuotaSnapshot {
+		return &pb.QuotaSnapshot{ProjectQuotas: map[string]*pb.ModelQuota{
+			"p/us-central1/m": {Model: "m", Region: "us-central1", MaxRpm: 1000, HeadroomRpm: 100, UtilizationRpm: util},
+		}}
+	}
+	reserve := func(v int64) *int64 { return &v }
+
+	tests := []struct {
+		name     string
+		cfg      governor.Config
+		util     float64
+		priority governor.Priority
+		wantDrop bool
+	}{
+		{"default reserve 30: best_effort at 0.65 admitted", governor.Config{}, 0.65, governor.Priority_PRIORITY_BEST_EFFORT, false},
+		{"default reserve 30: best_effort at 0.70 shed", governor.Config{}, 0.70, governor.Priority_PRIORITY_BEST_EFFORT, true},
+		{"reserve 50: best_effort at 0.55 shed", governor.Config{CriticalReservePercent: reserve(50)}, 0.55, governor.Priority_PRIORITY_BEST_EFFORT, true},
+		{"reserve 10: best_effort at 0.85 admitted", governor.Config{CriticalReservePercent: reserve(10)}, 0.85, governor.Priority_PRIORITY_BEST_EFFORT, false},
+		{"reserve 50: critical at 0.80 admitted", governor.Config{CriticalReservePercent: reserve(50)}, 0.80, governor.Priority_PRIORITY_CRITICAL, false},
+		{"unlabelled at 0.75 shed like best_effort", governor.Config{}, 0.75, governor.Priority_PRIORITY_UNSPECIFIED, true},
+		{"unlabelled at 0.65 admitted like best_effort", governor.Config{}, 0.65, governor.Priority_PRIORITY_UNSPECIFIED, false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			engine, err := governor.NewCascadeEngineFromConfig(&tc.cfg)
+			if err != nil {
+				t.Fatal(err)
+			}
+			dec := engine.Evaluate(snapshotAt(tc.util), "p", "us-central1", "m", tc.priority, "")
+			if dec.IsDrop() != tc.wantDrop {
+				t.Errorf("drop = %v, want %v (reason: %s)", dec.IsDrop(), tc.wantDrop, dec.Reason)
+			}
+		})
+	}
+
+	if _, err := governor.NewCascadeEngineFromConfig(nil); err == nil {
+		t.Error("expected error for nil config")
+	}
+}
+
+// TestCascadeEngine_CustomStopsAtCeiling checks that custom traffic cannot use
+// the critical reserve: it cascades once the primary reaches the ceiling, and
+// skips fallback targets that are above the ceiling.
+func TestCascadeEngine_CustomStopsAtCeiling(t *testing.T) {
+	engine, err := governor.NewCascadeEngine(map[string]governor.CustomPolicy{
+		"fb": {Cascade: []governor.CascadeStep{
+			{TargetModel: "m", TargetRegion: "europe-west1"},
+			{TargetModel: "m", TargetRegion: "europe-west4"},
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	q := func(region string, util float64) *pb.ModelQuota {
+		return &pb.ModelQuota{Model: "m", Region: region, MaxRpm: 1000, HeadroomRpm: 100, UtilizationRpm: util}
+	}
+	snap := &pb.QuotaSnapshot{ProjectQuotas: map[string]*pb.ModelQuota{
+		"p/us-central1/m":  q("us-central1", 0.75),  // above the 0.70 ceiling, below the old 95%
+		"p/europe-west1/m": q("europe-west1", 0.80), // above the ceiling: skipped
+		"p/europe-west4/m": q("europe-west4", 0.20),
+	}}
+
+	dec := engine.Evaluate(snap, "p", "us-central1", "m", governor.Priority_PRIORITY_CUSTOM, "fb")
+	if dec.IsDrop() || dec.ReplaceRegion != "europe-west4" {
+		t.Fatalf("want reroute to europe-west4, got drop=%v region=%q (%s)", dec.IsDrop(), dec.ReplaceRegion, dec.Reason)
+	}
+
+	snap.ProjectQuotas["p/us-central1/m"] = q("us-central1", 0.65)
+	dec = engine.Evaluate(snap, "p", "us-central1", "m", governor.Priority_PRIORITY_CUSTOM, "fb")
+	if dec.IsDrop() || dec.ReplaceRegion != "" {
+		t.Fatalf("want primary admitted below ceiling, got drop=%v region=%q", dec.IsDrop(), dec.ReplaceRegion)
+	}
+}

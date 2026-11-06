@@ -41,7 +41,7 @@ func makeMockTimeSeries(region, model string, value int64) *monitoringpb.TimeSer
 // GetTestReconciler helper accepts the config and store from the test
 func GetTestReconciler(cfg *governor.Config, store SnapshotStore) (*Reconciler, *GCPClient) {
 	ctx := context.Background()
-	gcpClient := NewMockGCPClient(ctx, cfg.DefaultProjectLimits, cfg.DefaultOrgLimits)
+	gcpClient := NewMockGCPClient(ctx, cfg.DefaultProjectLimits, cfg.Allowances)
 	reconciler, err := NewReconciler(cfg, gcpClient, store)
 	if err != nil {
 		panic(err)
@@ -66,7 +66,7 @@ func TestReconcile_AggregatesAndCalculates(t *testing.T) {
 			"projectb/us-central1/model1_flash": {MaxRpm: 50, MaxTpm: 2500},
 			"projectb/us-west1/model1_flash":    {MaxRpm: 50, MaxTpm: 2500},
 		},
-		DefaultOrgLimits: map[string]*governor.ModelLimit{
+		Allowances: map[string]*governor.ModelLimit{
 			"us-central1/model1_pro":   {MaxRpm: 500, MaxTpm: 25000},
 			"us-west1/model1_pro":      {MaxRpm: 500, MaxTpm: 25000},
 			"us-central1/model1_flash": {MaxRpm: 200, MaxTpm: 10000},
@@ -169,7 +169,7 @@ func TestReconciler_LifecycleStart(t *testing.T) {
 		DefaultProjectLimits: map[string]*governor.ModelLimit{
 			"projecta/us-central1/model1_pro": {MaxRpm: 100, MaxTpm: 5000},
 		},
-		DefaultOrgLimits: map[string]*governor.ModelLimit{
+		Allowances: map[string]*governor.ModelLimit{
 			"us-central1/model1_pro": {MaxRpm: 500, MaxTpm: 25000},
 		},
 	}
@@ -210,7 +210,7 @@ func TestReconcile_ZeroQuotaSafety(t *testing.T) {
 			// Max limit is 0
 			"projecta/us-central1/model1_pro": {MaxRpm: 0, MaxTpm: 0},
 		},
-		DefaultOrgLimits: map[string]*governor.ModelLimit{
+		Allowances: map[string]*governor.ModelLimit{
 			// Org limit is also 0
 			"us-central1/model1_pro": {MaxRpm: 0, MaxTpm: 0},
 		},
@@ -280,13 +280,13 @@ func TestReconciler_ErrorResilience(t *testing.T) {
 		DefaultProjectLimits: map[string]*governor.ModelLimit{
 			"projecta/us-central1/model1_pro": {MaxRpm: 100, MaxTpm: 5000},
 		},
-		DefaultOrgLimits: map[string]*governor.ModelLimit{
+		Allowances: map[string]*governor.ModelLimit{
 			"us-central1/model1_pro": {MaxRpm: 500, MaxTpm: 25000},
 		},
 	}
 
 	// 2. Get client and reconciler
-	client := NewMockGCPClient(ctx, cfg.DefaultProjectLimits, cfg.DefaultOrgLimits)
+	client := NewMockGCPClient(ctx, cfg.DefaultProjectLimits, cfg.Allowances)
 	reconciler, err := NewReconciler(cfg, client, store)
 	if err != nil {
 		t.Fatalf("Failed to create reconciler: %v", err)

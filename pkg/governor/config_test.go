@@ -21,7 +21,6 @@ func TestLoadConfig(t *testing.T) {
 
 	t.Run("valid config with explicit fields", func(t *testing.T) {
 		yamlContent := `
-org_id: "org-12345"
 project_ids:
   - "proj-alpha"
 regions:
@@ -31,9 +30,10 @@ models:
 poll_interval: 30s
 poll_timeout: 10s
 safety_margin: 15
-shed_threshold_best_effort: 0.75
-default_org_limits:
-  "us-central1/gemini-3.5-flash":
+critical_reserve_percent: 25
+dataplane_replicas: 3
+allowances:
+  "US-Central1/Gemini-3.5-Flash":
     max_rpm: 360
     max_tpm: 4000000
 `
@@ -41,9 +41,6 @@ default_org_limits:
 		cfg, err := LoadConfig(path)
 		if err != nil {
 			t.Fatalf("expected no error, got: %v", err)
-		}
-		if cfg.OrgId != "org-12345" {
-			t.Errorf("expected OrgId org-12345, got %s", cfg.OrgId)
 		}
 		if cfg.PollInterval != 30*time.Second {
 			t.Errorf("expected PollInterval 30s, got %v", cfg.PollInterval)
@@ -54,24 +51,30 @@ default_org_limits:
 		if cfg.SafetyMarginPercent != 15 {
 			t.Errorf("expected SafetyMarginPercent 15, got %d", cfg.SafetyMarginPercent)
 		}
-		if cfg.ShedThresholdBestEffort != 0.75 {
-			t.Errorf("expected ShedThresholdBestEffort 0.75, got %f", cfg.ShedThresholdBestEffort)
+		if cfg.ReservePercent() != 25 || cfg.BestEffortCeiling() != 0.75 {
+			t.Errorf("expected reserve 25 / ceiling 0.75, got %d / %f", cfg.ReservePercent(), cfg.BestEffortCeiling())
 		}
-		if cfg.DefaultProjectLimits == nil || cfg.DefaultOrgLimits == nil || cfg.CustomPolicies == nil {
+		if cfg.Replicas() != 3 {
+			t.Errorf("expected 3 replicas, got %d", cfg.Replicas())
+		}
+		if got := cfg.Allowances["us-central1/gemini-3.5-flash"]; got == nil || got.MaxRpm != 360 || got.MaxTpm != 4000000 {
+			t.Errorf("expected allowance key normalised to lower case, got %+v", cfg.Allowances)
+		}
+		if cfg.DefaultProjectLimits == nil || cfg.Allowances == nil || cfg.CustomPolicies == nil {
 			t.Errorf("expected maps to be non-nil")
 		}
 	})
 
 	t.Run("clamping and defaults applied for out-of-range values", func(t *testing.T) {
 		yamlContent := `
-org_id: "org-12345"
 project_ids: ["proj-1"]
 regions: ["us-central1"]
 models: ["gemini-3.5-flash"]
 poll_interval: 5s
 poll_timeout: 60s
 safety_margin: 2
-shed_threshold_best_effort: 0.01
+allowances:
+  "us-central1/gemini-3.5-flash": { max_rpm: 10 }
 `
 		path := writeTempYAML(t, "defaults.yaml", yamlContent)
 		cfg, err := LoadConfig(path)
@@ -87,8 +90,11 @@ shed_threshold_best_effort: 0.01
 		if cfg.SafetyMarginPercent != MinSafetyMarginPercent {
 			t.Errorf("expected SafetyMarginPercent clamped to %d, got %d", MinSafetyMarginPercent, cfg.SafetyMarginPercent)
 		}
-		if cfg.ShedThresholdBestEffort != DefaultShedThresholdBestEffort {
-			t.Errorf("expected ShedThresholdBestEffort defaulted to %f, got %f", DefaultShedThresholdBestEffort, cfg.ShedThresholdBestEffort)
+		if cfg.ReservePercent() != DefaultCriticalReservePercent {
+			t.Errorf("expected reserve defaulted to %d, got %d", DefaultCriticalReservePercent, cfg.ReservePercent())
+		}
+		if cfg.Replicas() != DefaultDataplaneReplicas {
+			t.Errorf("expected replicas defaulted to %d, got %d", DefaultDataplaneReplicas, cfg.Replicas())
 		}
 	})
 
@@ -98,9 +104,8 @@ shed_threshold_best_effort: 0.01
 			yaml string
 		}{
 			{
-				name: "missing org_id",
+				name: "missing allowances",
 				yaml: `
-org_id: ""
 project_ids: ["proj-1"]
 regions: ["us-central1"]
 models: ["gemini-3.5-flash"]
@@ -109,7 +114,6 @@ models: ["gemini-3.5-flash"]
 			{
 				name: "missing project_ids",
 				yaml: `
-org_id: "org-12345"
 project_ids: []
 regions: ["us-central1"]
 models: ["gemini-3.5-flash"]
@@ -118,7 +122,6 @@ models: ["gemini-3.5-flash"]
 			{
 				name: "missing regions",
 				yaml: `
-org_id: "org-12345"
 project_ids: ["proj-1"]
 regions: []
 models: ["gemini-3.5-flash"]
@@ -127,7 +130,6 @@ models: ["gemini-3.5-flash"]
 			{
 				name: "missing models",
 				yaml: `
-org_id: "org-12345"
 project_ids: ["proj-1"]
 regions: ["us-central1"]
 models: []

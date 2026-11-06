@@ -2,7 +2,6 @@ package dataplane
 
 import (
 	"strconv"
-	"strings"
 
 	"github.com/MKand/gateway-ai-workload-prioritization/pkg/governor"
 	"github.com/MKand/gateway-ai-workload-prioritization/pkg/router"
@@ -72,16 +71,8 @@ func NewEvaluator(cache *SnapshotCache, engine *governor.CascadeEngine) *Evaluat
 // ParsePriority maps an X-Request-Priority header value to a Priority. Unknown
 // or missing values map to PRIORITY_UNSPECIFIED, which is treated as best effort.
 func ParsePriority(v string) governor.Priority {
-	switch strings.ToLower(strings.TrimSpace(v)) {
-	case "critical":
-		return governor.Priority_PRIORITY_CRITICAL
-	case "best_effort", "best-effort", "besteffort":
-		return governor.Priority_PRIORITY_BEST_EFFORT
-	case "custom":
-		return governor.Priority_PRIORITY_CUSTOM
-	default:
-		return governor.Priority_PRIORITY_UNSPECIFIED
-	}
+	p, _ := governor.ParsePriorityName(v)
+	return p
 }
 
 // Evaluate computes the Result for a request. headers must have lower-case keys.

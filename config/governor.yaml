@@ -1,7 +1,5 @@
 # config/governor.yaml
 
-org_id: "1234567890"
-
 project_ids:
   - "my-gcp-project"
 
@@ -24,16 +22,26 @@ poll_timeout: 10s
 
 # Quota safety buffers
 safety_margin: 10              # 10% safety buffer (integer percentage)
-shed_threshold_best_effort: 0.70 # Shed batch/offline traffic above 70% utilization
 
-# Baseline limits used as fallbacks if GCP Quotas API returns empty
-default_org_limits:
-  "us-central1/gemini-3.5-flash":
-    max_rpm: 360
-    max_tpm: 4000000
-  "europe-west1/gemini-3.5-flash":
-    max_rpm: 360
-    max_tpm: 4000000
+# The org's Dynamic Shared Quota allowance per "location/model". Customers cannot
+# query this number, so it is configured up front (ask your account team, or use
+# your observed peak without 429s). Every cascade target below needs an entry.
+# The values here are placeholders: never commit real allowance numbers.
+allowances:
+  "us-central1/gemini-3.5-flash": { max_rpm: 360, max_tpm: 4000000 }
+  "us-east1/gemini-3.5-flash":    { max_rpm: 360, max_tpm: 4000000 }
+  "us-west1/gemini-3.5-flash":    { max_rpm: 360, max_tpm: 4000000 }
+  "europe-west1/gemini-3.5-flash": { max_rpm: 360, max_tpm: 4000000 }
+  "europe-west3/gemini-3.5-flash": { max_rpm: 360, max_tpm: 4000000 }
+  "europe-west4/gemini-3.5-flash": { max_rpm: 360, max_tpm: 4000000 }
+
+# Share of each allowance only critical traffic may use (0-90). Best-effort and
+# custom traffic stop at 100 - critical_reserve_percent.
+critical_reserve_percent: 30
+
+# Data plane replicas the allowance is split across when the control plane
+# cannot report the live count.
+dataplane_replicas: 1
 
 # Custom fallback cascade policies (requires both target_model and region)
 custom_policies:

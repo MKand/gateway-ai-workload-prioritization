@@ -58,9 +58,8 @@ func main() {
 
 	gcpClient, err := controlplane.NewGCPClient(
 		ctx,
-		cfg.OrgId,
 		cfg.DefaultProjectLimits,
-		cfg.DefaultOrgLimits,
+		cfg.Allowances,
 		quotaClient,
 		usageClient,
 	)

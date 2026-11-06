@@ -36,7 +36,7 @@ func main() {
 		log.Fatalf("Failed to load config from %s: %v", *configPath, err)
 	}
 
-	engine, err := governor.NewCascadeEngine(cfg.CustomPolicies)
+	engine, err := governor.NewCascadeEngineFromConfig(cfg)
 	if err != nil {
 		log.Fatalf("Failed to build cascade engine: %v", err)
 	}
