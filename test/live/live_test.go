@@ -518,6 +518,7 @@ func TestLive(t *testing.T) {
 		l := s.logFor(t, r.requestID)
 		check(t, r.status, http.StatusTooManyRequests, "status")
 		check(t, r.headers.Get("X-Governor-Decision"), dataplane.DecisionShed, "decision header")
+		check(t, l.Decision, dataplane.DecisionShed, "decision")
 		if r.headers.Get("Retry-After") == "" {
 			t.Error("missing Retry-After")
 		}

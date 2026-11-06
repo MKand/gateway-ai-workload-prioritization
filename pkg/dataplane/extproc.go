@@ -11,7 +11,14 @@ import (
 	typev3 "github.com/envoyproxy/go-control-plane/envoy/type/v3"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/types/known/structpb"
 )
+
+// ExtProcMetadataNamespace is the untyped dynamic metadata namespace emitted
+// on every ProcessingResponse so Envoy's access log can record the governor
+// decision even when ImmediateResponse (HTTP 429 shed) bypasses request header
+// mutations.
+const ExtProcMetadataNamespace = "envoy.filters.http.ext_proc"
 
 // ExtProcServer implements Envoy's ExternalProcessor service. It only acts on
 // the request headers phase; all other phases are acknowledged unchanged.
@@ -65,9 +72,11 @@ func (s *ExtProcServer) Process(stream extprocv3.ExternalProcessor_ProcessServer
 
 func (s *ExtProcServer) handleRequestHeaders(h *extprocv3.HttpHeaders) *extprocv3.ProcessingResponse {
 	res := s.evaluator.Evaluate(headerMap(h))
+	meta := decisionMetadata(res.SetHeaders)
 
 	if res.Shed {
 		return &extprocv3.ProcessingResponse{
+			DynamicMetadata: meta,
 			Response: &extprocv3.ProcessingResponse_ImmediateResponse{
 				ImmediateResponse: &extprocv3.ImmediateResponse{
 					Status:  &typev3.HttpStatus{Code: typev3.StatusCode_TooManyRequests},
@@ -80,6 +89,7 @@ func (s *ExtProcServer) handleRequestHeaders(h *extprocv3.HttpHeaders) *extprocv
 	}
 
 	return &extprocv3.ProcessingResponse{
+		DynamicMetadata: meta,
 		Response: &extprocv3.ProcessingResponse_RequestHeaders{
 			RequestHeaders: &extprocv3.HeadersResponse{
 				Response: &extprocv3.CommonResponse{
@@ -90,6 +100,24 @@ func (s *ExtProcServer) handleRequestHeaders(h *extprocv3.HttpHeaders) *extprocv
 					ClearRouteCache: res.RouteChanged,
 				},
 			},
+		},
+	}
+}
+
+func decisionMetadata(headers map[string]string) *structpb.Struct {
+	decision := headers[HeaderDecision]
+	if decision == "" {
+		return nil
+	}
+	fields := map[string]*structpb.Value{
+		"decision": structpb.NewStringValue(decision),
+	}
+	if reason := headers[HeaderReason]; reason != "" {
+		fields["reason"] = structpb.NewStringValue(reason)
+	}
+	return &structpb.Struct{
+		Fields: map[string]*structpb.Value{
+			ExtProcMetadataNamespace: structpb.NewStructValue(&structpb.Struct{Fields: fields}),
 		},
 	}
 }
