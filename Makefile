@@ -159,6 +159,20 @@ run-envoy:
 	docker run --rm --network host -v $(CURDIR)/deploy/envoy/envoy.yaml:/etc/envoy/envoy.yaml:ro $(ENVOY_IMAGE) -c /etc/envoy/envoy.yaml
 
 ## ----------------------------------------------------------------------
+## CONTAINERS
+## ----------------------------------------------------------------------
+docker-build:
+	docker build --build-arg BIN=controlplane -t governor-controlplane .
+	docker build --build-arg BIN=dataplane -t governor-dataplane .
+
+# CONFIG must be an absolute path when overridden.
+compose-up: docker-build
+	CONFIG=$(abspath $(CONFIG)) GOV_UID=$$(id -u) GOV_GID=$$(id -g) docker compose -f deploy/compose/docker-compose.yaml up -d
+
+compose-down:
+	docker compose -f deploy/compose/docker-compose.yaml down
+
+## ----------------------------------------------------------------------
 ## HELP
 ## ----------------------------------------------------------------------
 
@@ -179,4 +193,7 @@ help:
 	@echo "  make run-controlplane  - Run the control plane (CONFIG=..., CP_FLAGS=--insecure by default)"
 	@echo "  make run-dataplane     - Run the ext_proc data plane (CONFIG=..., DP_FLAGS=--insecure by default)"
 	@echo "  make run-envoy         - Run Envoy locally with deploy/envoy/envoy.yaml"
+	@echo "  make docker-build      - Build governor-controlplane and governor-dataplane images"
+	@echo "  make compose-up        - Build images and start control plane + data plane + Envoy (CONFIG=...)"
+	@echo "  make compose-down      - Stop the compose stack"
 	@echo "  make help              - Display this help message"

@@ -22,6 +22,7 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/health"
 	healthpb "google.golang.org/grpc/health/grpc_health_v1"
+	"google.golang.org/grpc/reflection"
 	"google.golang.org/protobuf/encoding/protojson"
 )
 
@@ -192,6 +193,8 @@ func main() {
 	grpcServer := grpc.NewServer(grpc.Creds(creds))
 	pb.RegisterQuotaDiscoveryServiceServer(grpcServer, quotaServer)
 	healthpb.RegisterHealthServer(grpcServer, healthSrv)
+	// Reflection lets operators use grpcurl for health checks and debugging.
+	reflection.Register(grpcServer)
 
 	go func() {
 		<-ctx.Done()

@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log"
 	"log/slog"
 	"strings"
 	"time"
@@ -171,13 +170,13 @@ func (gqc *GCPClient) FetchMetrics(ctx context.Context, projectIDs []string, reg
 	for _, p := range projectIDs {
 		rawRPM, err := gqc.fetchQuotaInfo(ctx, p, rpmQuotaID)
 		if err != nil {
-			log.Printf("Warning: failed to fetch RPM limits for project %s: %v. Falling back to default limits.", p, err)
+			slog.Warn("failed to fetch RPM limits, using default limits", "project", p, "err", err)
 			rawRPM = nil
 		}
 
 		rawTPM, err := gqc.fetchQuotaInfo(ctx, p, tpmQuotaID)
 		if err != nil {
-			log.Printf("Warning: failed to fetch TPM limits for project %s: %v. Falling back to default limits.", p, err)
+			slog.Warn("failed to fetch TPM limits, using default limits", "project", p, "err", err)
 			rawTPM = nil
 		}
 
