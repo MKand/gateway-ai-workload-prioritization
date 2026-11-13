@@ -49,6 +49,11 @@ message TargetDemand {
   string target = 1;   // "location/model", lower case
   int64 requests = 2;
   int64 tokens = 3;    // estimated input tokens
+  // The admitted subset of requests/tokens (sent to Vertex AI). The control
+  // plane compares this with Cloud Monitoring usage to estimate traffic that
+  // bypasses the governor.
+  int64 admitted_requests = 4;
+  int64 admitted_tokens = 5;
 }
 
 message ReportUsageRequest {

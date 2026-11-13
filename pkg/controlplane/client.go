@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"log/slog"
 	"strings"
 	"time"
 
@@ -490,5 +491,123 @@ func NewMockGCPClient(ctx context.Context, projectLimits, allowances map[string]
 		allowances:       allowances,
 		quotaClient:      &MockQuotaRequestClient{},
 		monitoringClient: &MockUsageRequestClient{},
+	}
+}
+
+// usageSeriesWindow is how far back FetchUsageSeries reads. It must cover
+// Cloud Monitoring's lag plus the bypass comparison window.
+const usageSeriesWindow = 10 * time.Minute
+
+// FetchUsageSeries reads org-wide per-minute usage (requests and input
+// tokens) for the configured locations and models. With a metrics scope
+// project it makes one query per metric that covers every project in the
+// scope, including projects whose traffic bypasses the governor; otherwise
+// it sums over projectIDs.
+func (gqc *GCPClient) FetchUsageSeries(ctx context.Context, scopeProject string, projectIDs, regions, models []string) (UsageSeries, error) {
+	want := map[string]bool{}
+	for _, r := range regions {
+		for _, m := range models {
+			want[strings.ToLower(r)+"/"+strings.ToLower(m)] = true
+		}
+	}
+	names := projectIDs
+	if scopeProject != "" {
+		names = []string{scopeProject}
+	}
+
+	out := UsageSeries{}
+	for _, metric := range []struct {
+		typ string
+		add func(u *MinuteUsage, v int64)
+	}{
+		{rpmMetricType, func(u *MinuteUsage, v int64) { u.Requests += v }},
+		{tpmMetricType, func(u *MinuteUsage, v int64) { u.Tokens += v }},
+	} {
+		for _, name := range names {
+			if err := gqc.addUsageSeries(ctx, name, metric.typ, want, out, metric.add); err != nil {
+				return nil, err
+			}
+		}
+	}
+	return out, nil
+}
+
+func (gqc *GCPClient) addUsageSeries(ctx context.Context, project, metricType string, want map[string]bool, out UsageSeries, add func(*MinuteUsage, int64)) error {
+	now := time.Now()
+	req := &monitoringpb.ListTimeSeriesRequest{
+		Name:   fmt.Sprintf("projects/%s", project),
+		Filter: fmt.Sprintf(`metric.type = "%s" AND resource.type = "aiplatform.googleapis.com/Location"`, metricType),
+		Interval: &monitoringpb.TimeInterval{
+			StartTime: timestamppb.New(now.Add(-usageSeriesWindow)),
+			EndTime:   timestamppb.New(now),
+		},
+		View: monitoringpb.ListTimeSeriesRequest_FULL,
+		Aggregation: &monitoringpb.Aggregation{
+			AlignmentPeriod:    durationpb.New(time.Minute),
+			PerSeriesAligner:   monitoringpb.Aggregation_ALIGN_SUM,
+			CrossSeriesReducer: monitoringpb.Aggregation_REDUCE_SUM,
+			GroupByFields:      []string{"resource.label.location", "metric.label.base_model"},
+		},
+	}
+	it, err := gqc.monitoringClient.makeUsageRequest(ctx, req)
+	if err != nil {
+		return fmt.Errorf("usage series for %s: %w", project, err)
+	}
+	for {
+		ts, err := it.Next()
+		if err == iterator.Done {
+			return nil
+		}
+		if err != nil {
+			return fmt.Errorf("usage series for %s: %w", project, err)
+		}
+		key := strings.ToLower(ts.GetResource().GetLabels()["location"]) + "/" + strings.ToLower(ts.GetMetric().GetLabels()["base_model"])
+		if !want[key] {
+			continue
+		}
+		if out[key] == nil {
+			out[key] = map[int64]MinuteUsage{}
+		}
+		for _, p := range ts.GetPoints() {
+			end := p.GetInterval().GetEndTime().AsTime()
+			// An aligned point covers the minute that ends at its end time.
+			minute := end.Add(-time.Minute).Truncate(time.Minute).Unix()
+			u := out[key][minute]
+			add(&u, p.GetValue().GetInt64Value())
+			out[key][minute] = u
+		}
+	}
+}
+
+// UsageSeriesFetcher reads org-wide per-minute usage.
+type UsageSeriesFetcher func(ctx context.Context) (UsageSeries, error)
+
+// RunBypassLoop refreshes the tracker from Cloud Monitoring every interval
+// until ctx is cancelled. Failures are logged; the tracker falls back to
+// "allowance minus margin" once its data is older than 5 minutes.
+func RunBypassLoop(ctx context.Context, fetch UsageSeriesFetcher, tracker *BypassTracker, interval time.Duration, onResult func(error)) {
+	refresh := func() {
+		callCtx, cancel := context.WithTimeout(ctx, interval)
+		defer cancel()
+		series, err := fetch(callCtx)
+		if err == nil {
+			tracker.Update(series)
+		} else if ctx.Err() == nil {
+			slog.Warn("bypass usage read failed", "err", err)
+		}
+		if onResult != nil {
+			onResult(err)
+		}
+	}
+	refresh()
+	t := time.NewTicker(interval)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			refresh()
+		}
 	}
 }

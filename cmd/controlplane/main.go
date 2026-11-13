@@ -121,6 +121,54 @@ func main() {
 		healthSrv.SetServingStatus(pb.QuotaDiscoveryService_ServiceDesc.ServiceName, healthpb.HealthCheckResponse_SERVING)
 	})
 
+	// Bypass subtraction: compare org-wide usage from Cloud Monitoring with
+	// what the governor admitted, and shrink every share by the difference.
+	bypass := controlplane.NewBypassTracker(cfg, nil)
+	quotaServer.WithBypassTracker(bypass)
+	bypassReads := reg.NewCounterVec("governor_bypass_reads_total", "Cloud Monitoring usage reads for bypass estimation, by result.", "result")
+	reg.NewGaugeFunc("governor_bypass_data_age_seconds",
+		"Age of the last Cloud Monitoring usage read (-1 before the first).",
+		func() []telemetry.Sample {
+			age := bypass.DataAge()
+			if age < 0 {
+				return []telemetry.Sample{{Value: -1}}
+			}
+			return []telemetry.Sample{{Value: age.Seconds()}}
+		})
+	reg.NewGaugeFunc("governor_bypass_estimate",
+		"Estimated per-minute traffic reaching Vertex AI without going through the governor.",
+		func() []telemetry.Sample {
+			var out []telemetry.Sample
+			for _, target := range bypass.Targets() {
+				e := bypass.Estimate(target)
+				out = append(out,
+					telemetry.Sample{LabelValues: []string{target, "requests"}, Value: float64(e.BypassRequests)},
+					telemetry.Sample{LabelValues: []string{target, "tokens"}, Value: float64(e.BypassTokens)})
+			}
+			return out
+		}, "target", "unit")
+	reg.NewGaugeFunc("governor_allowance_factor",
+		"Fraction of each allowance left after subtracting bypass traffic and the margin (1 = nothing subtracted).",
+		func() []telemetry.Sample {
+			var out []telemetry.Sample
+			for _, target := range bypass.Targets() {
+				e := bypass.Estimate(target)
+				out = append(out,
+					telemetry.Sample{LabelValues: []string{target, "rpm"}, Value: e.RPMFactor},
+					telemetry.Sample{LabelValues: []string{target, "tpm"}, Value: e.TPMFactor})
+			}
+			return out
+		}, "target", "unit")
+	go controlplane.RunBypassLoop(ctx, func(ctx context.Context) (controlplane.UsageSeries, error) {
+		return gcpClient.FetchUsageSeries(ctx, cfg.MetricsScopeProject, cfg.ProjectIDs, cfg.Regions, cfg.Models)
+	}, bypass, cfg.PollInterval, func(err error) {
+		if err != nil {
+			bypassReads.Inc("error")
+			return
+		}
+		bypassReads.Inc("success")
+	})
+
 	go func() {
 		if err := telemetry.ServeHTTP(ctx, *metricsAddr, reg); err != nil {
 			slog.Error("metrics server stopped", "err", err)

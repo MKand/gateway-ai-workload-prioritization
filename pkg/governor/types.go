@@ -36,7 +36,26 @@ type Config struct {
 	// DefaultRequestTokensEstimate.
 	DefaultRequestTokens int64 `json:"defaultRequestTokens,omitempty" yaml:"default_request_tokens,omitempty"`
 
+	// BypassMarginPercent is subtracted from each allowance on top of the
+	// estimated bypass traffic, to absorb Cloud Monitoring lag. nil means
+	// DefaultBypassMarginPercent.
+	BypassMarginPercent *int64 `json:"bypassMarginPercent,omitempty" yaml:"bypass_margin_percent,omitempty"`
+
+	// MetricsScopeProject is a Cloud Monitoring scoping project whose metrics
+	// scope includes every project in the org that uses Gemini. Org-wide usage
+	// (including traffic that bypasses the governor) is read through it. When
+	// empty, usage is summed over project_ids only.
+	MetricsScopeProject string `json:"metricsScopeProject,omitempty" yaml:"metrics_scope_project,omitempty"`
+
 	CustomPolicies map[string]CustomPolicy `json:"customPolicies,omitempty" yaml:"custom_policies,omitempty"`
+}
+
+// BypassMargin returns the effective bypass margin percentage.
+func (c *Config) BypassMargin() int64 {
+	if c == nil || c.BypassMarginPercent == nil {
+		return DefaultBypassMarginPercent
+	}
+	return *c.BypassMarginPercent
 }
 
 // RequestTokens returns the token estimate for requests without size hints.

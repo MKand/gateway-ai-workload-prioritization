@@ -1,6 +1,9 @@
 package server
 
 import (
+	"math"
+	"time"
+	"github.com/MKand/gateway-ai-workload-prioritization/pkg/governor"
 	"context"
 	"io"
 	"net"
@@ -183,5 +186,50 @@ func TestServer_ReportUsage(t *testing.T) {
 	// 5% floor + 90% * 10/40.
 	if got := resp.GetShares()[0].GetRpmFraction(); got < 0.2749 || got > 0.2751 {
 		t.Fatalf("b's share = %v, want 0.275", got)
+	}
+}
+
+func TestServer_ReportUsageAppliesBypass(t *testing.T) {
+	cfg := &governor.Config{Allowances: map[string]*governor.ModelLimit{
+		"us-central1/m": {MaxRpm: 1000},
+		"global/m":      {MaxRpm: 1000},
+	}}
+	now := time.Unix(1_700_000_000, 0).Truncate(time.Minute).Add(5*time.Minute + 30*time.Second)
+	clock := func() time.Time { return now }
+	bypass := controlplane.NewBypassTracker(cfg, clock)
+	srv, err := NewServer(controlplane.NewInMemoryStore())
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv.WithBypassTracker(bypass)
+	srv.now = clock
+
+	// Minute 4: the governor admits 400 requests, Monitoring later sees 600.
+	minute4 := now.Truncate(time.Minute).Add(-time.Minute)
+	srv.now = func() time.Time { return minute4.Add(10 * time.Second) }
+	if _, err := srv.ReportUsage(context.Background(), &pb.ReportUsageRequest{ClientId: "a", Demand: []*pb.TargetDemand{
+		{Target: "us-central1/m", Requests: 500, AdmittedRequests: 400},
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	srv.now = clock
+	bypass.Update(controlplane.UsageSeries{"us-central1/m": {minute4.Unix(): {Requests: 600}}})
+
+	resp, err := srv.ReportUsage(context.Background(), &pb.ReportUsageRequest{ClientId: "a"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]*pb.TargetShare{}
+	for _, s := range resp.GetShares() {
+		got[s.GetTarget()] = s
+	}
+	// Single replica (share 1) x factor (1 - 0.1 margin - 200/1000 bypass) = 0.7.
+	if s := got["us-central1/m"]; s == nil || math.Abs(s.GetRpmFraction()-0.7) > 1e-9 {
+		t.Fatalf("us-central1 share = %+v, want rpm 0.7", s)
+	}
+	// global has no demand yet: it still gets an (even) share, scaled by the
+	// margin-only factor 0.9.
+	if s := got["global/m"]; s == nil || math.Abs(s.GetRpmFraction()-0.9) > 1e-9 {
+		t.Fatalf("global share = %+v, want rpm 0.9", s)
 	}
 }
