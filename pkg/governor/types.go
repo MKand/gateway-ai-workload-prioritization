@@ -36,7 +36,26 @@ type Config struct {
 	// DefaultRequestTokensEstimate.
 	DefaultRequestTokens int64 `json:"defaultRequestTokens,omitempty" yaml:"default_request_tokens,omitempty"`
 
+	// BypassMarginPercent is subtracted from each allowance on top of the
+	// estimated bypass traffic, to absorb Cloud Monitoring lag. nil means
+	// DefaultBypassMarginPercent.
+	BypassMarginPercent *int64 `json:"bypassMarginPercent,omitempty" yaml:"bypass_margin_percent,omitempty"`
+
+	// MetricsScopeProject is a Cloud Monitoring scoping project whose metrics
+	// scope includes every project in the org that uses Gemini. Org-wide usage
+	// (including traffic that bypasses the governor) is read through it. When
+	// empty, usage is summed over project_ids only.
+	MetricsScopeProject string `json:"metricsScopeProject,omitempty" yaml:"metrics_scope_project,omitempty"`
+
 	CustomPolicies map[string]CustomPolicy `json:"customPolicies,omitempty" yaml:"custom_policies,omitempty"`
+}
+
+// BypassMargin returns the effective bypass margin percentage.
+func (c *Config) BypassMargin() int64 {
+	if c == nil || c.BypassMarginPercent == nil {
+		return DefaultBypassMarginPercent
+	}
+	return *c.BypassMarginPercent
 }
 
 // RequestTokens returns the token estimate for requests without size hints.
@@ -90,6 +109,9 @@ type Decision struct {
 	ReplaceRegion string               `json:"replace_region,omitempty"` // If set, rewrite target region in URL/host
 	Reason        string               `json:"reason,omitempty"`         // Diagnostic reason for metrics/logs
 	RetryAfter    *durationpb.Duration `json:"retry_after,omitempty"`    // Header value for HTTP 429
+	// OverAllowance is set when critical traffic was admitted beyond the
+	// local allowance (it is never shed, but this is worth counting).
+	OverAllowance bool `json:"over_allowance,omitempty"`
 }
 
 func (d *Decision) IsDrop() bool {

@@ -36,8 +36,10 @@ type Limiter struct {
 }
 
 type demandCounter struct {
-	requests atomic.Int64
-	tokens   atomic.Int64
+	requests         atomic.Int64
+	tokens           atomic.Int64
+	admittedRequests atomic.Int64
+	admittedTokens   atomic.Int64
 }
 
 // NewLimiter builds a Limiter from a loaded Config. Each allowance is split
@@ -117,18 +119,52 @@ func (l *Limiter) DrainDemand() []*pb.TargetDemand {
 	out := make([]*pb.TargetDemand, 0, len(l.demand))
 	for k, d := range l.demand {
 		req, tok := d.requests.Swap(0), d.tokens.Swap(0)
-		if req == 0 && tok == 0 {
+		areq, atok := d.admittedRequests.Swap(0), d.admittedTokens.Swap(0)
+		if req == 0 && tok == 0 && areq == 0 && atok == 0 {
 			continue
 		}
-		out = append(out, &pb.TargetDemand{Target: k, Requests: req, Tokens: tok})
+		out = append(out, &pb.TargetDemand{Target: k, Requests: req, Tokens: tok, AdmittedRequests: areq, AdmittedTokens: atok})
 	}
 	return out
 }
 
-func (l *Limiter) record(location, model string, tokens int64) {
+// Available is the current balance of one bucket.
+type Available struct {
+	Requests int64
+	Tokens   int64
+}
+
+// Available returns the current balance of every bucket, keyed by
+// "location/model". Unlimited dimensions are reported as 0 so dashboards are
+// not dominated by the internal "no limit" sentinel.
+func (l *Limiter) Available() map[string]Available {
+	out := map[string]Available{}
+	if l == nil {
+		return out
+	}
+	for k, b := range l.buckets {
+		rpm, tpm := b.GetAvailable()
+		a := l.allowances[k]
+		if a.MaxRpm <= 0 {
+			rpm = 0
+		}
+		if a.MaxTpm <= 0 {
+			tpm = 0
+		}
+		out[k] = Available{Requests: rpm, Tokens: tpm}
+	}
+	return out
+}
+
+func (l *Limiter) record(location, model string, tokens int64, admitted bool) {
 	if d := l.demand[strings.ToLower(location)+"/"+strings.ToLower(model)]; d != nil {
+		t := max(tokens, 0)
 		d.requests.Add(1)
-		d.tokens.Add(max(tokens, 0))
+		d.tokens.Add(t)
+		if admitted {
+			d.admittedRequests.Add(1)
+			d.admittedTokens.Add(t)
+		}
 	}
 }
 
@@ -160,8 +196,9 @@ func (l *Limiter) TryAdmit(location, model string, tokens int64) (ok, known bool
 	if b == nil {
 		return false, false
 	}
-	l.record(location, model, tokens)
-	return b.TryAcquireAbove(tokens, l.reservePercent), true
+	ok = b.TryAcquireAbove(tokens, l.reservePercent)
+	l.record(location, model, tokens, ok)
+	return ok, true
 }
 
 // AdmitCritical always reserves one request and tokens for critical traffic,
@@ -172,6 +209,6 @@ func (l *Limiter) AdmitCritical(location, model string, tokens int64) (within, k
 	if b == nil {
 		return true, false
 	}
-	l.record(location, model, tokens)
+	l.record(location, model, tokens, true)
 	return b.ForceAcquire(tokens), true
 }

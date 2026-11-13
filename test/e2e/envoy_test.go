@@ -45,6 +45,7 @@ import (
 	"github.com/MKand/gateway-ai-workload-prioritization/pkg/dataplane"
 	"github.com/MKand/gateway-ai-workload-prioritization/pkg/governor"
 	"github.com/MKand/gateway-ai-workload-prioritization/pkg/server"
+	"github.com/MKand/gateway-ai-workload-prioritization/pkg/telemetry"
 	extprocv3 "github.com/envoyproxy/go-control-plane/envoy/service/ext_proc/v3"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
@@ -286,7 +287,7 @@ func call(t *testing.T, host, priority, policy string) result {
 	return callPath(t, usPath, host, priority, policy)
 }
 
-func callPath(t *testing.T, path, host, priority, policy string) result {
+func callPath(t *testing.T, path, host, priority, policy string, extra ...string) result {
 	t.Helper()
 	req, _ := http.NewRequest(http.MethodPost, envoyURL+path, strings.NewReader(`{"contents":[]}`))
 	req.Host = host
@@ -297,6 +298,9 @@ func callPath(t *testing.T, path, host, priority, policy string) result {
 	}
 	if policy != "" {
 		req.Header.Set("X-Governor-Policy", policy)
+	}
+	for i := 0; i+1 < len(extra); i += 2 {
+		req.Header.Set(extra[i], extra[i+1])
 	}
 	// A spoofed governor header that must never reach the upstream.
 	req.Header.Set("X-Governor-Target-Region", "spoofed")
@@ -355,9 +359,16 @@ func TestEnvoyE2E(t *testing.T) {
 	defer conn.Close()
 	cache := dataplane.NewSnapshotCache()
 	go cache.Run(ctx, pb.NewQuotaDiscoveryServiceClient(conn), "e2e")
+	reg := telemetry.NewRegistry()
+	dpMetrics := dataplane.NewMetrics(reg, cache, engine.Limiter())
 	startGRPC(t, dpAddr, func(s *grpc.Server) {
-		extprocv3.RegisterExternalProcessorServer(s, dataplane.NewExtProcServer(dataplane.NewEvaluator(cache, engine)))
+		extprocv3.RegisterExternalProcessorServer(s, dataplane.NewExtProcServer(dataplane.NewEvaluator(cache, engine)).WithMetrics(dpMetrics))
 	})
+	scrape := func() string {
+		var b strings.Builder
+		reg.WriteText(&b)
+		return b.String()
+	}
 
 	usUtil := func() float64 {
 		if s := cache.Get(); s != nil && s.ProjectQuotas["p1/us-central1/gemini-3.5-flash"] != nil {
@@ -389,6 +400,15 @@ func TestEnvoyE2E(t *testing.T) {
 		r := callPath(t, "/v1/projects/p1/locations/us-central1/publishers/anthropic/models/claude:rawPredict", usHost, "best_effort", "")
 		expect(t, r.status, http.StatusOK, "status")
 		expect(t, r.echo.Headers["X-Governor-Decision"], dataplane.DecisionBypass, "decision")
+	})
+
+	t.Run("upstream 429 is passed through and counted", func(t *testing.T) {
+		r := callPath(t, usPath, usHost, "critical", "", "X-Fake-Status", "429")
+		expect(t, r.status, http.StatusTooManyRequests, "status")
+		expect(t, r.resp.Get("X-Governor-Decision"), "", "not a governor shed")
+		waitFor(t, "upstream 429 metric", 5*time.Second, func() bool {
+			return strings.Contains(scrape(), `governor_upstream_429_total{target="us-central1/gemini-3.5-flash",priority="critical"} 1`)
+		})
 	})
 
 	t.Run("non vertex host is rejected (no open proxy)", func(t *testing.T) {

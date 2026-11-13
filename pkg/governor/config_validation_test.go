@@ -198,6 +198,23 @@ allowances:
 			wantErr: `default_request_tokens -1 cannot be negative`,
 		},
 		{
+			name: "bypass margin default and custom",
+			body: okAllowance + "bypass_margin_percent: 25\nmetrics_scope_project: scope-proj\n",
+			check: func(t *testing.T, c *Config) {
+				if c.BypassMargin() != 25 || c.MetricsScopeProject != "scope-proj" {
+					t.Errorf("got margin %d scope %q", c.BypassMargin(), c.MetricsScopeProject)
+				}
+				if (&Config{}).BypassMargin() != DefaultBypassMarginPercent {
+					t.Errorf("default margin wrong")
+				}
+			},
+		},
+		{
+			name:    "bypass margin too large",
+			body:    okAllowance + "bypass_margin_percent: 60\n",
+			wantErr: `bypass_margin_percent 60 must be between 0 and 50`,
+		},
+		{
 			name:    "zero replicas",
 			body:    okAllowance + "dataplane_replicas: 0\n",
 			wantErr: `dataplane_replicas 0 must be at least 1`,

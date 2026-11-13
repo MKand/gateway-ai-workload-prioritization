@@ -134,7 +134,7 @@ func (ce *CascadeEngine) Decide(snapshot *pb.QuotaSnapshot, r Request) Decision 
 		if !within || IsSaturated(primaryQuota) {
 			reason = "priority traffic is not modified. WARNING: the allowance for the target is used up"
 		}
-		return Decision{Drop: false, Reason: reason}
+		return Decision{Drop: false, Reason: reason, OverAllowance: !within}
 
 	// 3. CUSTOM: like best effort, custom traffic may not use the critical
 	// reserve. Once the primary is full, traverse the fallback steps.

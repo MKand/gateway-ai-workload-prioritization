@@ -1,0 +1,43 @@
+# Local full stack: control plane + data plane + Envoy.
+#
+#   make compose-up CONFIG=$PWD/my-governor.yaml
+#
+# Uses host networking (Linux) so the stock deploy/envoy/envoy.yaml, which
+# expects the data plane on 127.0.0.1:50052, works unchanged. The control
+# plane reads Cloud Quotas and Cloud Monitoring with your Application Default
+# Credentials, mounted read-only. The governor containers run as your user
+# (GOV_UID/GOV_GID, set by `make compose-up`) so they can read that file, which
+# gcloud creates with mode 0600.
+#
+# Ports: Envoy 10000 (admin 9901), control plane gRPC 50051 (metrics 9091),
+# data plane ext_proc 50052 (metrics 9090).
+services:
+  controlplane:
+    image: governor-controlplane
+    network_mode: host
+    user: "${GOV_UID:-65532}:${GOV_GID:-65532}"
+    command: ["--config", "/etc/governor/governor.yaml", "--insecure", "--log-format", "json"]
+    environment:
+      GOOGLE_APPLICATION_CREDENTIALS: /creds/adc.json
+      GOOGLE_CLOUD_QUOTA_PROJECT: ${GOOGLE_CLOUD_QUOTA_PROJECT:-}
+    volumes:
+      - ${CONFIG:-../../config/governor.yaml}:/etc/governor/governor.yaml:ro
+      - ${ADC:-~/.config/gcloud/application_default_credentials.json}:/creds/adc.json:ro
+    restart: unless-stopped
+
+  dataplane:
+    image: governor-dataplane
+    network_mode: host
+    user: "${GOV_UID:-65532}:${GOV_GID:-65532}"
+    command: ["--config", "/etc/governor/governor.yaml", "--insecure", "--control-plane", "localhost:50051", "--log-format", "json"]
+    volumes:
+      - ${CONFIG:-../../config/governor.yaml}:/etc/governor/governor.yaml:ro
+    restart: unless-stopped
+
+  envoy:
+    image: ${ENVOY_IMAGE:-envoyproxy/envoy:v1.34-latest}
+    network_mode: host
+    command: ["-c", "/etc/envoy/envoy.yaml"]
+    volumes:
+      - ../envoy/envoy.yaml:/etc/envoy/envoy.yaml:ro
+    restart: unless-stopped
