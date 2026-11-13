@@ -125,6 +125,34 @@ func (l *Limiter) DrainDemand() []*pb.TargetDemand {
 	return out
 }
 
+// Available is the current balance of one bucket.
+type Available struct {
+	Requests int64
+	Tokens   int64
+}
+
+// Available returns the current balance of every bucket, keyed by
+// "location/model". Unlimited dimensions are reported as 0 so dashboards are
+// not dominated by the internal "no limit" sentinel.
+func (l *Limiter) Available() map[string]Available {
+	out := map[string]Available{}
+	if l == nil {
+		return out
+	}
+	for k, b := range l.buckets {
+		rpm, tpm := b.GetAvailable()
+		a := l.allowances[k]
+		if a.MaxRpm <= 0 {
+			rpm = 0
+		}
+		if a.MaxTpm <= 0 {
+			tpm = 0
+		}
+		out[k] = Available{Requests: rpm, Tokens: tpm}
+	}
+	return out
+}
+
 func (l *Limiter) record(location, model string, tokens int64) {
 	if d := l.demand[strings.ToLower(location)+"/"+strings.ToLower(model)]; d != nil {
 		d.requests.Add(1)

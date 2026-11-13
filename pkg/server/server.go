@@ -26,6 +26,9 @@ func NewServer(store controlplane.SnapshotStore) (*Server, error) {
 	}, nil
 }
 
+// ShareTracker returns the server's ShareTracker.
+func (s *Server) ShareTracker() *controlplane.ShareTracker { return s.shares }
+
 // WithShareTracker replaces the server's ShareTracker (for example one with a
 // fake clock in tests) and returns the server.
 func (s *Server) WithShareTracker(t *controlplane.ShareTracker) *Server {

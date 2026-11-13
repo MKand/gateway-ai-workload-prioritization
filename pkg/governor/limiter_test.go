@@ -351,3 +351,17 @@ func TestLimiter_DrainDemandCountsAdmittedAndRejected(t *testing.T) {
 		t.Fatalf("second drain should be empty, got %v", again)
 	}
 }
+
+func TestTokenBucket_SmallAllowanceKeepsReserve(t *testing.T) {
+	tb := governor.NewTokenBucketWithClock(3, 0, newFakeClock().Now)
+	admitted := 0
+	for tb.TryAcquireAbove(0, 30) {
+		admitted++
+	}
+	if admitted != 2 {
+		t.Fatalf("best effort admitted %d of 3, want 2 (1 kept for critical)", admitted)
+	}
+	if !tb.TryAcquire(0) {
+		t.Fatal("the reserved request should still be available to critical traffic")
+	}
+}

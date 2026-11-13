@@ -102,8 +102,11 @@ func (tb *TokenBucket) TryAcquireAbove(tokens, floorPercent int64) bool {
 	tb.refillLocked(tb.now())
 
 	reqTokens := max(tokens, 0)
-	floorRPM := tb.maxRPM * floorPercent / 100
-	floorTPM := tb.maxTPM * floorPercent / 100
+	// Round the floor up so small allowances still keep a reserve: with a
+	// 30% reserve, a 3 RPM allowance keeps 1 request for critical traffic
+	// instead of 0.
+	floorRPM := ceilPercent(tb.maxRPM, floorPercent)
+	floorTPM := ceilPercent(tb.maxTPM, floorPercent)
 	if tb.currentRPM-1 >= floorRPM && tb.currentTPM-reqTokens >= floorTPM {
 		tb.currentRPM--
 		tb.currentTPM -= reqTokens
@@ -198,4 +201,12 @@ func (tb *TokenBucket) SyncHeadroom(headroomRPM, headroomTPM int64) {
 	// Reset the clock to now so we refill from this new snapshot baseline
 	tb.lastRefillRPM = now
 	tb.lastRefillTPM = now
+}
+
+// ceilPercent returns ceil(v * pct / 100) for non-negative inputs.
+func ceilPercent(v, pct int64) int64 {
+	if v <= 0 || pct <= 0 {
+		return 0
+	}
+	return (v*pct + 99) / 100
 }

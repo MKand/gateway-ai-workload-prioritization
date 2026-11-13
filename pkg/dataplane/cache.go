@@ -6,7 +6,7 @@ package dataplane
 import (
 	"context"
 	"errors"
-	"log"
+	"log/slog"
 	"sync/atomic"
 	"time"
 
@@ -53,7 +53,7 @@ func (c *SnapshotCache) Run(ctx context.Context, client pb.QuotaDiscoveryService
 		if received {
 			backoff = initialBackoff
 		}
-		log.Printf("quota stream disconnected: %v (retrying in %v)", err, backoff)
+		slog.Warn("quota stream disconnected", "err", err, "retry_in", backoff)
 
 		select {
 		case <-ctx.Done():

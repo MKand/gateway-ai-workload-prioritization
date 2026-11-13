@@ -3,7 +3,9 @@ package dataplane
 import (
 	"errors"
 	"io"
+	"log/slog"
 	"sort"
+	"strconv"
 	"strings"
 
 	corev3 "github.com/envoyproxy/go-control-plane/envoy/config/core/v3"
@@ -18,6 +20,7 @@ import (
 type ExtProcServer struct {
 	extprocv3.UnimplementedExternalProcessorServer
 	evaluator *Evaluator
+	metrics   *Metrics
 }
 
 // NewExtProcServer wraps an Evaluator as an Envoy ext_proc server.
@@ -25,8 +28,22 @@ func NewExtProcServer(e *Evaluator) *ExtProcServer {
 	return &ExtProcServer{evaluator: e}
 }
 
+// WithMetrics enables metrics and returns the server. nil disables them.
+func (s *ExtProcServer) WithMetrics(m *Metrics) *ExtProcServer {
+	s.metrics = m
+	return s
+}
+
+// streamState is what one HTTP stream's request-headers phase learned, kept
+// so the response-headers phase can attribute the upstream status.
+type streamState struct {
+	result Result
+	seen   bool
+}
+
 // Process handles one HTTP stream from Envoy.
 func (s *ExtProcServer) Process(stream extprocv3.ExternalProcessor_ProcessServer) error {
+	var state streamState
 	for {
 		req, err := stream.Recv()
 		if errors.Is(err, io.EOF) {
@@ -42,12 +59,16 @@ func (s *ExtProcServer) Process(stream extprocv3.ExternalProcessor_ProcessServer
 		var resp *extprocv3.ProcessingResponse
 		switch r := req.Request.(type) {
 		case *extprocv3.ProcessingRequest_RequestHeaders:
-			resp = s.handleRequestHeaders(r.RequestHeaders)
+			res := s.evaluator.Evaluate(headerMap(r.RequestHeaders))
+			state = streamState{result: res, seen: true}
+			s.metrics.observeDecision(res)
+			resp = s.responseFor(res)
 		case *extprocv3.ProcessingRequest_RequestBody:
 			resp = &extprocv3.ProcessingResponse{Response: &extprocv3.ProcessingResponse_RequestBody{RequestBody: &extprocv3.BodyResponse{}}}
 		case *extprocv3.ProcessingRequest_RequestTrailers:
 			resp = &extprocv3.ProcessingResponse{Response: &extprocv3.ProcessingResponse_RequestTrailers{RequestTrailers: &extprocv3.TrailersResponse{}}}
 		case *extprocv3.ProcessingRequest_ResponseHeaders:
+			s.observeResponse(state, r.ResponseHeaders)
 			resp = &extprocv3.ProcessingResponse{Response: &extprocv3.ProcessingResponse_ResponseHeaders{ResponseHeaders: &extprocv3.HeadersResponse{}}}
 		case *extprocv3.ProcessingRequest_ResponseBody:
 			resp = &extprocv3.ProcessingResponse{Response: &extprocv3.ProcessingResponse_ResponseBody{ResponseBody: &extprocv3.BodyResponse{}}}
@@ -63,9 +84,33 @@ func (s *ExtProcServer) Process(stream extprocv3.ExternalProcessor_ProcessServer
 	}
 }
 
-func (s *ExtProcServer) handleRequestHeaders(h *extprocv3.HttpHeaders) *extprocv3.ProcessingResponse {
-	res := s.evaluator.Evaluate(headerMap(h))
+// observeResponse records the upstream status of an admitted request. Sheds
+// are answered by the governor itself (ImmediateResponse), so Envoy never
+// sends their response headers here and they cannot be miscounted as
+// upstream 429s.
+func (s *ExtProcServer) observeResponse(state streamState, h *extprocv3.HttpHeaders) {
+	if !state.seen || state.result.Shed || state.result.Target == "" {
+		return
+	}
+	code, err := strconv.Atoi(headerMap(h)[":status"])
+	if err != nil {
+		return
+	}
+	s.metrics.observeUpstream(state.result.Target, state.result.Priority, code)
+	if code == 429 {
+		slog.Warn("upstream 429 from Vertex AI",
+			"target", state.result.Target,
+			"priority", state.result.Priority,
+			"decision", state.result.Decision,
+			"estimated_tokens", state.result.Tokens)
+	}
+}
 
+func (s *ExtProcServer) handleRequestHeaders(h *extprocv3.HttpHeaders) *extprocv3.ProcessingResponse {
+	return s.responseFor(s.evaluator.Evaluate(headerMap(h)))
+}
+
+func (s *ExtProcServer) responseFor(res Result) *extprocv3.ProcessingResponse {
 	if res.Shed {
 		return &extprocv3.ProcessingResponse{
 			Response: &extprocv3.ProcessingResponse_ImmediateResponse{

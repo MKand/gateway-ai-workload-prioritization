@@ -90,6 +90,9 @@ type Decision struct {
 	ReplaceRegion string               `json:"replace_region,omitempty"` // If set, rewrite target region in URL/host
 	Reason        string               `json:"reason,omitempty"`         // Diagnostic reason for metrics/logs
 	RetryAfter    *durationpb.Duration `json:"retry_after,omitempty"`    // Header value for HTTP 429
+	// OverAllowance is set when critical traffic was admitted beyond the
+	// local allowance (it is never shed, but this is worth counting).
+	OverAllowance bool `json:"over_allowance,omitempty"`
 }
 
 func (d *Decision) IsDrop() bool {

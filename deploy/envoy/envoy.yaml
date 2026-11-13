@@ -71,7 +71,9 @@ static_resources:
                       failure_mode_allow: true
                       processing_mode:
                         request_header_mode: SEND
-                        response_header_mode: SKIP
+                        # Response headers are sent so the governor can count
+                        # upstream 429s per target and priority.
+                        response_header_mode: SEND
                         request_body_mode: NONE
                         response_body_mode: NONE
                         request_trailer_mode: SKIP
