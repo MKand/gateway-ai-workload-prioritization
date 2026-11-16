@@ -18,7 +18,7 @@ if [[ -n "${PROJECT_B}" && -z "${MODEL}" && "${PROJECT_B}" == gemini* ]]; then M
 readonly PERMISSIONS=(  # what LIVE_TEST_ROLES grant and the tests use
   resourcemanager.projects.get
   serviceusage.services.list serviceusage.services.enable serviceusage.services.disable serviceusage.services.use
-  cloudquotas.quotas.get cloudquotas.quotas.update
+  cloudquotas.quotas.get
   monitoring.timeSeries.list
   aiplatform.endpoints.predict
 )
@@ -110,22 +110,10 @@ if [[ -n "${PROJECT_B}" && -n "${ORGS[${PROJECT_A}]:-}" && -n "${ORGS[${PROJECT_
 fi
 
 echo "Model"
-if grep -qx cloudquotas.googleapis.com <<<"$(gcloud services list --enabled --project="${PROJECT_A}" --format='value(config.name)' 2>/dev/null)"; then
-  models="$(gcloud beta quotas info describe "${RPM_QUOTA_ID}" --service="${QUOTA_SERVICE}" --project="${PROJECT_A}" --format=json 2>/dev/null \
-    | jq -r --arg r "${GQG_REGION_PRIMARY}" --arg f "${GQG_REGION_FALLBACK}" '
-        [.dimensionsInfos[]? | select(.dimensions.base_model and (.details.value // 0) > 0)
-         | {r: .dimensions.region, m: .dimensions.base_model, v: .details.value}] as $all
-        | [$all[] | select(.r == $r) | .m] - ([$all[] | select(.r == $r) | .m] - [$all[] | select(.r == $f) | .m])
-        | unique | .[]')"
-  if [[ -n "${MODEL}" ]]; then
-    grep -qx "${MODEL}" <<<"${models}" && pass "${MODEL} has a per-project RPM quota in ${GQG_REGION_PRIMARY} and ${GQG_REGION_FALLBACK}" \
-      || fail "${MODEL} has no per-project RPM quota in both ${GQG_REGION_PRIMARY} and ${GQG_REGION_FALLBACK}" "pick one of: $(tr '\n' ' ' <<<"${models}")"
-  else
-    info "models with a per-project RPM quota in both regions: $(tr '\n' ' ' <<<"${models}")"
-  fi
-  info "check the model is callable; retired models (e.g. gemini-1.5-*) still have quota entries but return 404"
+if [[ -n "${MODEL}" ]]; then
+  info "${MODEL}: any callable Gemini model works, including Dynamic Shared Quota models; the test uses its own ${GQG_ALLOWANCE_RPM} RPM allowance"
 else
-  info "cloudquotas API disabled on ${PROJECT_A}; model check skipped (setup.sh fails early if the model has no per-project quota)"
+  info "pass a model (for example gemini-2.5-flash); retired models (gemini-1.5-*) return 404"
 fi
 
 echo "Local"

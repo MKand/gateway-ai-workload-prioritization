@@ -34,10 +34,10 @@ load_state
 
 export GQG_CONFIG="${CONFIG}" GQG_PROJECT_A="${PROJECT_A}" GQG_PROJECT_B="${PROJECT_B}" \
        GQG_MODEL="${MODEL}" GQG_REGION_PRIMARY="${REGION_PRIMARY}" GQG_REGION_FALLBACK="${REGION_FALLBACK}" \
-       GQG_LOWERED_RPM="${LOWERED_RPM}" GQG_ENVOY_CONTAINER
+       GQG_ALLOWANCE_RPM="${ALLOWANCE_RPM}" GQG_ENVOY_CONTAINER
 # User ADC needs a quota project for the Cloud Quotas / Monitoring APIs.
 export GOOGLE_CLOUD_QUOTA_PROJECT="${PROJECT_A}"
 
-log "running live tests (mode=${MODE}); this takes ~10-20 minutes because usage metrics lag"
+log "running live tests (mode=${MODE}); about 5-12 minutes, mostly waiting for Cloud Monitoring to show the bypass traffic"
 cd "${REPO_ROOT}"
-go test -tags live -count=1 -v -timeout 45m ./test/live/...
+go test -tags live -count=1 -v -timeout 30m ./test/live/...
