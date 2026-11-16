@@ -11,7 +11,7 @@ STATE_FILE="${STATE_DIR}/env"
 # Defaults; override via environment.
 : "${GQG_REGION_PRIMARY:=us-central1}"
 : "${GQG_REGION_FALLBACK:=europe-west1}"
-: "${GQG_LOWERED_RPM:=10}"
+: "${GQG_ALLOWANCE_RPM:=20}"   # deliberately low allowance the test drives traffic against
 : "${GQG_ENVOY_CONTAINER:=gqg-live-envoy}"
 : "${DRY_RUN:=0}"
 
@@ -19,7 +19,7 @@ readonly QUOTA_SERVICE="aiplatform.googleapis.com"
 readonly RPM_QUOTA_ID="GenerateContentRequestsPerMinutePerProjectPerRegionPerBaseModel"
 readonly REQUIRED_APIS=(aiplatform.googleapis.com cloudquotas.googleapis.com monitoring.googleapis.com)
 # Least-privilege roles needed on every test project (see README "Roles").
-readonly LIVE_TEST_ROLES=(roles/browser roles/serviceusage.serviceUsageAdmin roles/cloudquotas.admin roles/monitoring.viewer roles/aiplatform.user)
+readonly LIVE_TEST_ROLES=(roles/browser roles/serviceusage.serviceUsageAdmin roles/cloudquotas.viewer roles/monitoring.viewer roles/aiplatform.user)
 
 # GQG_SA=<service-account-email> makes every gcloud call in these scripts
 # impersonate that service account (no keys). The Go test uses ADC, which must
@@ -97,7 +97,8 @@ current_rpm_limit() {
 
 # set_rpm_preference PROJECT REGION MODEL VALUE creates or updates the quota
 # preference for (region, base_model). Quota preferences cannot be deleted;
-# teardown restores the original value instead.
+# teardown restores the original value instead. Only used by teardown, to undo
+# state left by runs from before milestone 1 (which lowered a project quota).
 set_rpm_preference() {
   local project="$1" region="$2" model="$3" value="$4"
   local pref; pref="$(preference_id "${region}" "${model}")"

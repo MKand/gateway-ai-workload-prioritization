@@ -3,10 +3,12 @@
 End-to-end tests against real GCP: real Cloud Quotas and Cloud Monitoring reads, the real control plane and data plane, the real Envoy config, and real Vertex AI traffic.
 Each run is **setup -> test -> teardown**. Teardown always runs, even on failure or Ctrl-C, and restores everything it changed.
 
+The governor enforces a configured allowance itself, so the test changes **no quotas**. Setup writes a deliberately low allowance (20 RPM by default) and the test fills it with a few dozen tiny requests, far below any real limit, so it costs cents and causes no real 429s.
+
 | Command | Projects | Covers | Time |
 | :--- | :--- | :--- | :--- |
-| `make live-single PROJECT_A=... MODEL=...` | 1 | Live reads, forward, shed, reroute, fail-open | ~3-5 min |
-| `make live-dual PROJECT_A=... PROJECT_B=... MODEL=...` | 2 (same org) | Plus per-project isolation and org usage = A + B | ~3-5 min |
+| `make live-single PROJECT_A=... MODEL=...` | 1 | Live reads, critical reserve, reroute, metrics, bypass detection, failure modes | ~5-12 min |
+| `make live-dual PROJECT_A=... PROJECT_B=... MODEL=...` | 2 (same org) | Plus: the allowance is shared org-wide across projects | ~5-12 min |
 
 ## Quick start
 
@@ -33,7 +35,7 @@ make live-dual   PROJECT_A=<a> PROJECT_B=<b> MODEL=<model>
 
 | Requirement | Why |
 | :--- | :--- |
-| Dedicated, throwaway project(s) | Project A's quota is lowered to 10 RPM during the run |
+| A test project (no production traffic needed) | Real Gemini calls are made; quotas are not changed |
 | Inside an **organization** | Setup reads the org ID; dual mode needs both projects in the **same** org |
 | No org policy blocking `us-central1`, `europe-west1` or Gemini models | Primary and fallback regions |
 
@@ -65,15 +67,13 @@ gcloud auth application-default login
 | :--- | :--- |
 | `roles/browser` | Reading the project and its org |
 | `roles/serviceusage.serviceUsageAdmin` | Enabling/disabling APIs; using the project as the quota project |
-| `roles/cloudquotas.admin` | Reading limits; lowering and restoring the quota preference |
+| `roles/cloudquotas.viewer` | Reading limits |
 | `roles/monitoring.viewer` | Reading usage metrics |
 | `roles/aiplatform.user` | Calling Gemini |
 
 ### 4. Model
 
-The test needs a model with a **per-project RPM quota in both regions** (`GenerateContentRequestsPerMinutePerProjectPerRegionPerBaseModel`).
-Most current Gemini text models use Dynamic Shared Quota and have **no** such quota. TTS variants such as `gemini-2.5-flash-tts` do (verified 2026-10-27).
-`make live-preflight` lists the eligible models once the Cloud Quotas API is enabled on project A. Retired models (`gemini-1.5-*`) are still listed but return 404.
+Any callable Gemini model works, including the current text models on Dynamic Shared Quota (for example `gemini-2.5-flash`). Retired models (`gemini-1.5-*`) return 404.
 
 ### 5. Run and read the results
 
@@ -85,38 +85,36 @@ Most current Gemini text models use Dynamic Shared Quota and have **no** such qu
 
 | ID | Check |
 | :--- | :--- |
-| R1-R3 | Reconcile works; the lowered limit is visible; every project/region has a real (non-fallback) limit |
-| F1 | Healthy best effort is forwarded to the primary region |
+| R1, R2 | Reconcile against real GCP works; Cloud Monitoring usage series are readable |
+| F1 | Best effort is forwarded to the primary region, and the upstream 2xx is counted |
 | F2 | Non-Vertex host gets 404 |
-| F3 | Background load saturates project A's primary (waits for Monitoring, ~1.5-2 min) |
-| F4 | Best effort gets 429 with `Retry-After`, no upstream call |
+| F3 | Best effort stops at the critical reserve (about 70% of the allowance): 429 with `Retry-After`, no upstream call |
+| F4 | Critical is still forwarded while best effort is shed |
 | F5 | Custom is rerouted: Envoy dials the fallback region with the rewritten path |
-| F6 | Critical is never rewritten |
-| M1, M2 | (dual) Project B is unaffected; org usage equals A + B |
-| X1, X2 | Data plane down: Envoy fails open. Control plane down: the last snapshot is kept |
+| M1 | (dual) The allowance is org-wide: project B's best effort is shed too |
+| F6 | Metrics recorded the shed, forward and reroute decisions |
+| B1 | Direct calls to Vertex AI (not through the governor) show up as bypass once Cloud Monitoring catches up (waits up to 10 min) |
+| X1, X2 | Data plane down: Envoy fails open. Control plane down: the data plane keeps enforcing locally |
 
 ## What setup and teardown change
 
 | Step | Changes |
 | :--- | :--- |
-| `setup.sh` | Enables `aiplatform`, `cloudquotas`, `monitoring` where disabled; records project A's current RPM limit; lowers it to 10 via a quota preference; writes `.state/` |
-| `teardown.sh` | Restores the preference to the recorded value; disables only the APIs setup enabled; removes the Envoy container and `.state/` |
-
-Quota preferences can't be deleted, so the preference `gqg-live-rpm-<region>-<model>` stays, set to the original value.
+| `setup.sh` | Enables `aiplatform`, `cloudquotas`, `monitoring` where disabled; writes `.state/` with a governor config (low allowance for the primary and fallback regions) |
+| `teardown.sh` | Disables only the APIs setup enabled; removes the Envoy container and `.state/`. Also restores a quota preference left by runs from before milestone 1 |
 
 ## Troubleshooting
 
 | Symptom | Cause / fix |
 | :--- | :--- |
-| `no '...PerBaseModel' entry for ... base_model=<model>` | The model has no per-project quota (Dynamic Shared Quota) or isn't a base model ID; pick one from preflight |
+| `B1` times out with no usage for the model | Cloud Monitoring has no quota usage metric for this model (possible on Dynamic Shared Quota). Bypass subtraction then cannot see bypass traffic; report the model so the metric source can be adapted |
 | `404 Publisher model ... not found` | The model is retired or not available in the region |
-| `R3 ... equals the built-in fallback` | The limit wasn't read from Cloud Quotas; check the model ID and `make live-check` output |
 | `API requires a quota project` | ADC user credentials need a quota project; `run.sh` sets `GOOGLE_CLOUD_QUOTA_PROJECT` to project A |
 | Scripts and Go test use different identities | With `GQG_SA`: `gcloud auth application-default login --impersonate-service-account=$GQG_SA`. Without: re-run `gcloud auth application-default login` as the CLI account |
 | `no valid identity for the scripts` with `GQG_SA` | You can't impersonate the SA yet: run `create-sa.sh`, wait 1-2 min |
 | A command hangs, or fails with `API ... not enabled on project` | Calls as the SA are charged to project A; re-run `create-sa.sh` to enable the needed APIs |
 | `port ... in use` | Stop whatever listens on 10000, 9901, 50051 or 50052 |
 | `a previous run was not torn down` | `make live-teardown` |
-| Teardown couldn't restore the quota | State is kept; re-run `make live-teardown`, or use the printed `gcloud` command |
+| Teardown couldn't restore a quota preference (old runs only) | State is kept; re-run `make live-teardown`, or use the printed `gcloud` command |
 
-Options: `GQG_SA` (service account to impersonate), `DRY_RUN=1` (print changes only), `GQG_KEEP=1` (skip teardown for debugging), `GQG_REGION_PRIMARY` / `GQG_REGION_FALLBACK` (defaults `us-central1` / `europe-west1`), `GQG_LOWERED_RPM` (default `10`), `GQG_REQUEST_BODY` (custom request JSON).
+Options: `GQG_SA` (service account to impersonate), `DRY_RUN=1` (print changes only), `GQG_KEEP=1` (skip teardown for debugging), `GQG_REGION_PRIMARY` / `GQG_REGION_FALLBACK` (defaults `us-central1` / `europe-west1`), `GQG_ALLOWANCE_RPM` (default `20`), `GQG_DIRECT_CALLS` (direct Vertex calls for B1, default `10`), `GQG_REQUEST_BODY` (custom request JSON).

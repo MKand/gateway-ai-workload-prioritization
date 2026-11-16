@@ -2,7 +2,8 @@
 # Undoes everything setup.sh changed. Safe to run more than once and safe to
 # run after a failed or interrupted setup.
 #
-#   1. Restores project A's RPM quota preference to its original value.
+#   1. Restores project A's RPM quota preference, only for state left by runs
+#      from before milestone 1 (current runs do not change quotas).
 #   2. Disables only the APIs that setup.sh enabled.
 #   3. Removes the Envoy container used by the test.
 #   4. Deletes test/live/.state (generated config + state).
