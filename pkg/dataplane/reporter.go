@@ -2,7 +2,7 @@ package dataplane
 
 import (
 	"context"
-	"log"
+	"log/slog"
 	"time"
 
 	pb "github.com/MKand/gateway-ai-workload-prioritization/gen/go/governor/v1"
@@ -68,7 +68,7 @@ func (r *UsageReporter) ReportOnce(ctx context.Context) bool {
 	if err != nil {
 		r.failures++
 		if r.failures == fallbackAfterFailures {
-			log.Printf("usage report failed %d times (%v); using the even split from dataplane_replicas", r.failures, err)
+			slog.Warn("usage reports failing; using the even split from dataplane_replicas", "failures", r.failures, "err", err)
 			r.limiter.ResetShares()
 		}
 		return false

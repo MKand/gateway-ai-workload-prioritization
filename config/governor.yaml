@@ -43,6 +43,16 @@ critical_reserve_percent: 30
 # cannot report the live count.
 dataplane_replicas: 1
 
+# Bypass subtraction: the control plane compares org-wide usage in Cloud
+# Monitoring with what the governor admitted, and shrinks every share by the
+# difference plus this margin (absorbs Monitoring lag). 0-50, default 10.
+bypass_margin_percent: 10
+
+# Optional Cloud Monitoring scoping project whose metrics scope includes every
+# project that uses Gemini, so traffic from projects outside project_ids is
+# seen. Leave empty to sum usage over project_ids only.
+# metrics_scope_project: "my-monitoring-scope-project"
+
 # Input tokens charged for a request without Content-Length or X-Prompt-Tokens.
 # Otherwise the estimate is max(X-Prompt-Tokens, Content-Length / 4).
 default_request_tokens: 1000

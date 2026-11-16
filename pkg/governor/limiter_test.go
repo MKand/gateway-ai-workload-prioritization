@@ -338,16 +338,30 @@ func TestLimiter_DrainDemandCountsAdmittedAndRejected(t *testing.T) {
 	for _, d := range l.DrainDemand() {
 		got[d.GetTarget()] = d
 	}
-	if d := got["us-central1/m"]; d == nil || d.GetRequests() != 20 || d.GetTokens() != 2000 {
-		t.Fatalf("us-central1 demand = %+v, want 20 requests / 2000 tokens", d)
+	if d := got["us-central1/m"]; d == nil || d.GetRequests() != 20 || d.GetTokens() != 2000 || d.GetAdmittedRequests() != 7 || d.GetAdmittedTokens() != 700 {
+		t.Fatalf("us-central1 demand = %+v, want 20 requests / 2000 tokens, 7 / 700 admitted", d)
 	}
-	if d := got["europe-west1/m"]; d == nil || d.GetRequests() != 1 || d.GetTokens() != 5 {
-		t.Fatalf("europe-west1 demand = %+v", d)
+	if d := got["europe-west1/m"]; d == nil || d.GetRequests() != 1 || d.GetTokens() != 5 || d.GetAdmittedRequests() != 1 {
+		t.Fatalf("europe-west1 demand = %+v (critical is always admitted)", d)
 	}
 	if len(got) != 2 {
 		t.Fatalf("unexpected targets: %v", got)
 	}
 	if again := l.DrainDemand(); len(again) != 0 {
 		t.Fatalf("second drain should be empty, got %v", again)
+	}
+}
+
+func TestTokenBucket_SmallAllowanceKeepsReserve(t *testing.T) {
+	tb := governor.NewTokenBucketWithClock(3, 0, newFakeClock().Now)
+	admitted := 0
+	for tb.TryAcquireAbove(0, 30) {
+		admitted++
+	}
+	if admitted != 2 {
+		t.Fatalf("best effort admitted %d of 3, want 2 (1 kept for critical)", admitted)
+	}
+	if !tb.TryAcquire(0) {
+		t.Fatal("the reserved request should still be available to critical traffic")
 	}
 }

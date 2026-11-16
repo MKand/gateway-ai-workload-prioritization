@@ -57,6 +57,33 @@ type Result struct {
 	// RouteChanged is true when :path or :authority was rewritten, so Envoy
 	// must recompute the route.
 	RouteChanged bool
+
+	// The fields below describe the request for metrics and logs. They are
+	// empty for bypassed requests.
+
+	// Priority is the effective priority name ("critical", "best_effort",
+	// "custom"); unlabelled traffic is reported as "best_effort".
+	Priority string
+	// Target is the "location/model" the request is finally sent to (after
+	// any reroute), lower case.
+	Target string
+	// Tokens is the estimated input-token count.
+	Tokens int64
+	// OverAllowance is true for critical traffic admitted beyond the allowance.
+	OverAllowance bool
+}
+
+// priorityLabel returns the metric/log name of a priority. Unlabelled traffic
+// is always treated as best effort, so it is reported as such.
+func priorityLabel(p governor.Priority) string {
+	switch p {
+	case governor.Priority_PRIORITY_CRITICAL:
+		return "critical"
+	case governor.Priority_PRIORITY_CUSTOM:
+		return "custom"
+	default:
+		return "best_effort"
+	}
 }
 
 // Evaluator decides what to do with a request given the latest quota snapshot.
@@ -134,14 +161,19 @@ func (e *Evaluator) Evaluate(headers map[string]string) Result {
 	}
 
 	priority := ParsePriority(headers[HeaderPriority])
+	tokens := EstimateTokens(headers, e.defaultTokens)
 	d := e.engine.Decide(e.cache.Get(), governor.Request{
 		Project:  info.ProjectID,
 		Region:   info.Region,
 		Model:    info.Model,
 		Priority: priority,
 		Policy:   headers[HeaderPolicy],
-		Tokens:   EstimateTokens(headers, e.defaultTokens),
+		Tokens:   tokens,
 	})
+	res.Priority = priorityLabel(priority)
+	res.Tokens = tokens
+	res.OverAllowance = d.OverAllowance
+	res.Target = strings.ToLower(firstNonEmpty(d.ReplaceRegion, info.Region) + "/" + firstNonEmpty(d.ReplaceModel, info.Model))
 
 	res.SetHeaders[HeaderReason] = d.Reason
 

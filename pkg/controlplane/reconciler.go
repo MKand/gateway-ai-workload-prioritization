@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 	"time"
 
@@ -16,6 +17,24 @@ type Reconciler struct {
 	config        *governor.Config
 	quotaClient   MetricsClient
 	snapshotStore SnapshotStore
+	// observe, if set, is called after every reconcile with its error (nil on
+	// success), for metrics.
+	observe func(error)
+}
+
+// WithObserver sets a callback invoked after every reconcile with its result
+// and returns the Reconciler.
+func (r *Reconciler) WithObserver(fn func(error)) *Reconciler {
+	r.observe = fn
+	return r
+}
+
+func (r *Reconciler) reconcileObserved(ctx context.Context) error {
+	err := r.reconcile(ctx)
+	if r.observe != nil {
+		r.observe(err)
+	}
+	return err
 }
 
 func NewReconciler(config *governor.Config, client MetricsClient, store SnapshotStore) (*Reconciler, error) {
@@ -37,8 +56,8 @@ func (r *Reconciler) Start(ctx context.Context) error {
 	ticker := time.NewTicker(r.config.PollInterval)
 	defer ticker.Stop()
 
-	if err := r.reconcile(ctx); err != nil {
-		fmt.Printf("Error when starting up reconciler: %s", err.Error())
+	if err := r.reconcileObserved(ctx); err != nil {
+		slog.Error("initial reconcile failed", "err", err)
 	}
 
 	for {
@@ -46,8 +65,8 @@ func (r *Reconciler) Start(ctx context.Context) error {
 		case <-ctx.Done():
 			return ctx.Err()
 		case <-ticker.C:
-			if err := r.reconcile(ctx); err != nil {
-				fmt.Printf("Error when running reconcile loop: %s", err.Error())
+			if err := r.reconcileObserved(ctx); err != nil {
+				slog.Error("reconcile failed", "err", err)
 			}
 		}
 	}
@@ -56,7 +75,7 @@ func (r *Reconciler) Start(ctx context.Context) error {
 // ReconcileOnce runs a single fetch-and-store cycle. It is used by the
 // control plane's --once mode to validate quota/usage reads against real GCP.
 func (r *Reconciler) ReconcileOnce(ctx context.Context) error {
-	return r.reconcile(ctx)
+	return r.reconcileObserved(ctx)
 }
 
 func (r *Reconciler) reconcile(ctx context.Context) error {

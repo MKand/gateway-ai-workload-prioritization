@@ -58,6 +58,20 @@ func NewShareTracker(clock func() time.Time) *ShareTracker {
 	}
 }
 
+// ActiveReplicas returns how many replicas reported within the TTL.
+func (t *ShareTracker) ActiveReplicas() int {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	now := t.now()
+	n := 0
+	for _, r := range t.replicas {
+		if now.Sub(r.lastSeen) <= t.ttl {
+			n++
+		}
+	}
+	return n
+}
+
 // Report records one replica's demand since its previous report and returns
 // that replica's share of every target any active replica has reported, plus
 // the number of active replicas.

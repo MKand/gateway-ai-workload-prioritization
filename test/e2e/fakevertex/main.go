@@ -8,6 +8,7 @@ import (
 	"flag"
 	"log"
 	"net/http"
+	"strconv"
 )
 
 type echo struct {
@@ -25,6 +26,13 @@ func main() {
 	flag.Parse()
 
 	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		// Tests can ask for a specific status (for example 429) to simulate
+		// Vertex AI throttling.
+		if code, err := strconv.Atoi(r.Header.Get("X-Fake-Status")); err == nil && code >= 200 && code < 600 && code != 200 {
+			w.WriteHeader(code)
+			_, _ = w.Write([]byte(`{"error":{"code":` + strconv.Itoa(code) + `}}`))
+			return
+		}
 		e := echo{ServedBy: *region, Path: r.URL.RequestURI(), Host: r.Host, Headers: map[string]string{}}
 		for k := range r.Header {
 			e.Headers[http.CanonicalHeaderKey(k)] = r.Header.Get(k)

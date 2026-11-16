@@ -26,6 +26,11 @@ const (
 	// DefaultDataplaneReplicas is used when dataplane_replicas is unset.
 	DefaultDataplaneReplicas = 1
 
+	// DefaultBypassMarginPercent is the extra share of each allowance held back
+	// to absorb Cloud Monitoring lag when bypass_margin_percent is unset.
+	DefaultBypassMarginPercent int64 = 10
+	MaxBypassMarginPercent     int64 = 50
+
 	// DefaultRequestTokensEstimate is charged for requests without size hints
 	// when default_request_tokens is unset.
 	DefaultRequestTokensEstimate int64 = 1000
@@ -91,6 +96,12 @@ func validateAdmissionSettings(c *Config) error {
 	if c.CriticalReservePercent != nil {
 		if r := *c.CriticalReservePercent; r < MinCriticalReservePercent || r > MaxCriticalReservePercent {
 			return fmt.Errorf("config validation failed: critical_reserve_percent %d must be between %d and %d", r, MinCriticalReservePercent, MaxCriticalReservePercent)
+		}
+	}
+
+	if c.BypassMarginPercent != nil {
+		if m := *c.BypassMarginPercent; m < 0 || m > MaxBypassMarginPercent {
+			return fmt.Errorf("config validation failed: bypass_margin_percent %d must be between 0 and %d", m, MaxBypassMarginPercent)
 		}
 	}
 
